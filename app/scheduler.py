@@ -18,12 +18,12 @@ logger = logging.getLogger(__name__)
 # Shared in-memory state (written by scheduler thread, read by web thread)
 _state_lock = threading.Lock()
 _state = {
-    "last_run": None,        # datetime | None
-    "last_stats": None,      # dict | None
-    "next_run": None,        # datetime | None
-    "running": False,        # bool — True while a run is in progress
-    "run_count": 0,          # int — total number of completed runs
-    "log_entries": [],       # list[dict] — recent log entries for the web GUI
+    "last_run": None,  # datetime | None
+    "last_stats": None,  # dict | None
+    "next_run": None,  # datetime | None
+    "running": False,  # bool — True while a run is in progress
+    "run_count": 0,  # int — total number of completed runs
+    "log_entries": [],  # list[dict] — recent log entries for the web GUI
 }
 
 _MAX_LOG_ENTRIES = 200

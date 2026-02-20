@@ -57,15 +57,33 @@ dev: ## Run the archiver locally (requires pip install)
 	ARCHIVER_CONFIG=$(CONFIG_FILE) python main.py
 
 # ---------------------------------------------------------------------------
+# Linting and Formatting
+# ---------------------------------------------------------------------------
+.PHONY: lint
+lint: ## Run ruff linter
+	python3 -m ruff check app/ tests/ main.py
+
+.PHONY: format
+format: ## Format code with ruff
+	python3 -m ruff format app/ tests/ main.py
+
+.PHONY: format-check
+format-check: ## Check formatting without modifying
+	python3 -m ruff format --check app/ tests/ main.py
+
+.PHONY: test-ci
+test-ci: lint format-check test ## Run lint + format check + tests (matches CI)
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 .PHONY: test
 test: ## Run the test suite
-	pytest tests/ -v
+	python3 -m pytest tests/ -v
 
 .PHONY: test-coverage
 test-coverage: ## Run tests with coverage report
-	pytest tests/ --cov=app --cov-report=term-missing -v
+	python3 -m pytest tests/ --cov=app --cov-report=term-missing -v
 
 # ---------------------------------------------------------------------------
 # Cleanup
@@ -74,4 +92,4 @@ test-coverage: ## Run tests with coverage report
 clean: ## Remove Python cache files
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -name "*.pyc" -delete 2>/dev/null || true
-	rm -rf .pytest_cache .coverage htmlcov/
+	rm -rf .pytest_cache .coverage htmlcov/ .ruff_cache/

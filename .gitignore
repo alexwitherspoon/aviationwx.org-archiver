@@ -77,6 +77,19 @@ docs/*CHECKLIST*.md
 docs/*PLAN*.md
 docs/*PLANNING*.md
 
+# AI-generated temp files (anywhere in repo — delete before committing)
+**/*RESEARCH*.md
+**/*ANALYSIS*.md
+**/*PLAN*.md
+**/*PLANNING*.md
+**/*CHECKLIST*.md
+**/*DIAGNOSTICS*.md
+**/*TROUBLESHOOTING*.md
+**/*TEMP*.md
+# PR template is not an AI temp file
+!.github/pull_request_template.md
+.cursor/plans/
+
 # AI-specific configuration files (keep local only)
 .cursorrules
 .cursor/

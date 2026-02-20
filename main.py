@@ -4,6 +4,8 @@ AviationWX.org Archiver — application entry point.
 Starts the background scheduler and the Flask web GUI.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import sys
@@ -48,7 +50,8 @@ def main() -> None:
     host = config["web"]["host"]
     port = int(config["web"]["port"])
 
-    logger.info("Web GUI available at http://%s:%d", host if host != "0.0.0.0" else "localhost", port)
+    host_display = host if host != "0.0.0.0" else "localhost"
+    logger.info("Web GUI available at http://%s:%d", host_display, port)
 
     try:
         app.run(host=host, port=port, debug=False, use_reloader=False)

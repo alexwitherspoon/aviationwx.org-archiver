@@ -14,10 +14,13 @@ This project adheres to a Code of Conduct that all contributors are expected to 
    git clone https://github.com/YOUR_USERNAME/aviationwx.org-archiver.git
    cd aviationwx.org-archiver
    ```
-3. **Set up local development**:
+3. **Set up local development** (Python 3.12+):
    ```bash
    # Copy the example config
    cp config/config.yaml.example config/config.yaml
+
+   # Install dependencies
+   make setup
 
    # Start with Docker
    make up
@@ -53,15 +56,16 @@ This project adheres to a Code of Conduct that all contributors are expected to 
    ```
 
 2. **Make your changes** following our coding standards:
-   - Follow PEP 8 (Python) style guidelines
+   - Follow [CODE_STYLE.md](CODE_STYLE.md)
    - Add concise comments only for critical or unclear logic
    - Write tests for all new functionality
    - Update documentation for user-facing changes
    - Write clear commit messages
+   - **Do not commit** AI-generated temp files (research, analysis, plans)
 
-3. **Test your changes**:
+3. **Test your changes** (required before every commit):
    ```bash
-   make test
+   make test-ci
    ```
 
 4. **Commit your changes**:
@@ -105,7 +109,7 @@ This project adheres to a Code of Conduct that all contributors are expected to 
 ## Pull Request Process
 
 1. **Ensure your code works** and doesn't break existing functionality
-2. **Run tests**: `make test`
+2. **Run tests**: `make test-ci` (lint + format check + tests)
 3. **Update documentation** for any changes that affect users or developers
 4. **Keep commits focused** — one logical change per commit
 5. **Write clear commit messages**:
