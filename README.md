@@ -16,6 +16,20 @@ Part of the [AviationWX.org](https://github.com/alexwitherspoon/aviationwx) proj
 
 ## Quick Start
 
+### Option A: Pull pre-built image (recommended)
+
+```bash
+# Bleeding-edge (latest main) — use until first release
+docker pull ghcr.io/alexwitherspoon/aviationwx.org-archiver:edge
+
+# Latest stable — available after first tagged release (e.g. v1.0.0)
+docker pull ghcr.io/alexwitherspoon/aviationwx.org-archiver:latest
+```
+
+Then run with your config and archive volume (see docker-compose.yml).
+
+### Option B: Build from source
+
 ```bash
 # 1. Clone the repository
 git clone https://github.com/alexwitherspoon/aviationwx.org-archiver.git
@@ -100,6 +114,18 @@ make dev
 ```
 
 ## Docker
+
+Pre-built images are published to GitHub Container Registry:
+
+```bash
+# Bleeding-edge (latest main) — use this until first release
+docker pull ghcr.io/alexwitherspoon/aviationwx.org-archiver:edge
+
+# Latest stable — available after first tagged release (e.g. v1.0.0)
+docker pull ghcr.io/alexwitherspoon/aviationwx.org-archiver:latest
+```
+
+Or build from source:
 
 ```bash
 # Build the image

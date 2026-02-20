@@ -4,6 +4,8 @@ AviationWX.org Archiver - Configuration loader.
 Loads and validates configuration from a YAML file.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 

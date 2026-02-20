@@ -2,7 +2,6 @@
 Tests for the AviationWX.org Archiver.
 """
 
-import hashlib
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -15,14 +14,18 @@ import yaml
 # Config tests
 # ---------------------------------------------------------------------------
 
+
 def test_load_config_defaults_when_file_missing():
     """Loading config from a non-existent path returns DEFAULT_CONFIG values."""
-    from app.config import load_config, DEFAULT_CONFIG
+    from app.config import DEFAULT_CONFIG, load_config
 
     config = load_config("/nonexistent/path/config.yaml")
 
     assert config["archive"]["output_dir"] == DEFAULT_CONFIG["archive"]["output_dir"]
-    assert config["schedule"]["interval_minutes"] == DEFAULT_CONFIG["schedule"]["interval_minutes"]
+    assert (
+        config["schedule"]["interval_minutes"]
+        == DEFAULT_CONFIG["schedule"]["interval_minutes"]
+    )
     assert config["web"]["port"] == DEFAULT_CONFIG["web"]["port"]
 
 
@@ -52,8 +55,9 @@ def test_load_config_reads_yaml_file():
 
 def test_save_config_roundtrip():
     """Saving and re-loading a config produces identical values."""
-    from app.config import load_config, save_config, DEFAULT_CONFIG
     import copy
+
+    from app.config import DEFAULT_CONFIG, load_config, save_config
 
     config = copy.deepcopy(DEFAULT_CONFIG)
     config["schedule"]["interval_minutes"] = 42
@@ -67,7 +71,7 @@ def test_save_config_roundtrip():
 
 def test_load_config_invalid_yaml():
     """A malformed YAML file falls back to defaults without raising."""
-    from app.config import load_config, DEFAULT_CONFIG
+    from app.config import DEFAULT_CONFIG, load_config
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
         tmp.write(": : invalid yaml :::")
@@ -84,6 +88,7 @@ def test_load_config_invalid_yaml():
 # ---------------------------------------------------------------------------
 # Airport selection tests
 # ---------------------------------------------------------------------------
+
 
 def test_select_airports_archive_all():
     """When archive_all is True, all airports are returned."""
@@ -136,6 +141,7 @@ def test_select_airports_empty_selected():
 # Image URL helpers
 # ---------------------------------------------------------------------------
 
+
 def test_absolute_url_already_absolute():
     from app.archiver import _absolute_url
 
@@ -169,11 +175,11 @@ def test_looks_like_webcam_false():
 def test_scrape_image_urls_finds_webcam():
     from app.archiver import _scrape_image_urls
 
-    html = '''<html>
+    html = """<html>
     <img src="/cams/kspb/webcam.jpg" alt="webcam">
     <img src="/logo.png" alt="logo">
     <img src="/snapshot/camera.webp" alt="camera">
-    </html>'''
+    </html>"""
 
     urls = _scrape_image_urls(html, "https://aviationwx.org")
     assert any("webcam.jpg" in u for u in urls)
@@ -207,6 +213,7 @@ def test_extract_attr_missing():
 # save_image tests
 # ---------------------------------------------------------------------------
 
+
 def test_save_image_creates_directory_structure():
     """save_image creates year/month/day/airport subdirectories."""
     from app.archiver import save_image
@@ -219,7 +226,9 @@ def test_save_image_creates_directory_structure():
         ts = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
         data = b"\xff\xd8\xff" + b"\x00" * 100  # fake JPEG bytes
 
-        path = save_image(data, "http://example.com/webcam.jpg", "KSPB", config, timestamp=ts)
+        path = save_image(
+            data, "http://example.com/webcam.jpg", "KSPB", config, timestamp=ts
+        )
 
         assert path is not None
         assert os.path.isfile(path)
@@ -230,7 +239,7 @@ def test_save_image_creates_directory_structure():
 
 
 def test_save_image_deduplication():
-    """Saving identical content a second time returns the existing path without rewriting."""
+    """Saving identical content a second time returns existing path, no rewrite."""
     from app.archiver import save_image
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -241,10 +250,14 @@ def test_save_image_deduplication():
         ts = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
         data = b"\xff\xd8\xff" + b"\x00" * 100
 
-        path1 = save_image(data, "http://example.com/webcam.jpg", "KSPB", config, timestamp=ts)
+        path1 = save_image(
+            data, "http://example.com/webcam.jpg", "KSPB", config, timestamp=ts
+        )
         mtime1 = os.path.getmtime(path1)
 
-        path2 = save_image(data, "http://example.com/webcam.jpg", "KSPB", config, timestamp=ts)
+        path2 = save_image(
+            data, "http://example.com/webcam.jpg", "KSPB", config, timestamp=ts
+        )
 
         assert path1 == path2
         assert os.path.getmtime(path1) == mtime1  # file was not rewritten
@@ -253,6 +266,7 @@ def test_save_image_deduplication():
 # ---------------------------------------------------------------------------
 # fetch_airport_list tests (mocked HTTP)
 # ---------------------------------------------------------------------------
+
 
 def test_fetch_airport_list_success():
     """fetch_airport_list returns airports from a successful API response."""
@@ -280,8 +294,9 @@ def test_fetch_airport_list_success():
 
 
 def test_fetch_airport_list_retries_on_failure():
-    """fetch_airport_list retries on RequestException and returns empty list when all fail."""
+    """fetch_airport_list retries on RequestException, returns [] when all fail."""
     import requests as req_lib
+
     from app.archiver import fetch_airport_list
 
     config = {
@@ -293,7 +308,10 @@ def test_fetch_airport_list_retries_on_failure():
         }
     }
 
-    with patch("app.archiver.requests.get", side_effect=req_lib.RequestException("network error")):
+    with patch(
+        "app.archiver.requests.get",
+        side_effect=req_lib.RequestException("network error"),
+    ):
         airports = fetch_airport_list(config)
 
     assert airports == []
@@ -302,6 +320,7 @@ def test_fetch_airport_list_retries_on_failure():
 # ---------------------------------------------------------------------------
 # apply_retention tests
 # ---------------------------------------------------------------------------
+
 
 def test_apply_retention_zero_means_no_deletion():
     """retention_days=0 should not delete any files."""
@@ -322,6 +341,7 @@ def test_apply_retention_zero_means_no_deletion():
 def test_apply_retention_removes_old_files():
     """apply_retention removes files older than retention_days."""
     import time
+
     from app.archiver import apply_retention
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -343,12 +363,14 @@ def test_apply_retention_removes_old_files():
 # Web GUI tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def flask_client():
     """Create a Flask test client with a minimal config."""
+    import copy
+
     from app.config import DEFAULT_CONFIG
     from app.web import app as flask_app
-    import copy
 
     config = copy.deepcopy(DEFAULT_CONFIG)
     flask_app.config["ARCHIVER_CONFIG"] = config

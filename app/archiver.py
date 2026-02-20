@@ -5,6 +5,8 @@ Fetches webcam images from AviationWX.org and organises them on disk as:
     <output_dir>/<YYYY>/<MM>/<DD>/<AIRPORT_CODE>/<filename>
 """
 
+from __future__ import annotations
+
 import hashlib
 import logging
 import os
@@ -20,6 +22,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Airport discovery
 # ---------------------------------------------------------------------------
+
 
 def fetch_airport_list(config: dict) -> list[dict]:
     """
@@ -46,7 +49,10 @@ def fetch_airport_list(config: dict) -> list[dict]:
         except requests.RequestException as exc:
             logger.warning(
                 "Attempt %d/%d: failed to fetch airport list from %s: %s",
-                attempt, retries, url, exc,
+                attempt,
+                retries,
+                url,
+                exc,
             )
             if attempt < retries:
                 time.sleep(delay)
@@ -67,14 +73,19 @@ def select_airports(all_airports: list[dict], config: dict) -> list[dict]:
 
     selected_codes = {c.upper() for c in config["airports"].get("selected", [])}
     if not selected_codes:
-        logger.warning("No airports selected and archive_all is false; nothing to archive.")
+        logger.warning(
+            "No airports selected and archive_all is false; nothing to archive."
+        )
         return []
 
     filtered = [a for a in all_airports if _airport_code(a).upper() in selected_codes]
     found_codes = {_airport_code(a).upper() for a in filtered}
     missing = selected_codes - found_codes
     if missing:
-        logger.warning("Selected airports not found in API response: %s", ", ".join(sorted(missing)))
+        logger.warning(
+            "Selected airports not found in API: %s",
+            ", ".join(sorted(missing)),
+        )
 
     return filtered
 
@@ -87,6 +98,7 @@ def _airport_code(airport: dict) -> str:
 # ---------------------------------------------------------------------------
 # Image URL discovery
 # ---------------------------------------------------------------------------
+
 
 def fetch_image_urls(airport: dict, config: dict) -> list[str]:
     """
@@ -101,7 +113,8 @@ def fetch_image_urls(airport: dict, config: dict) -> list[str]:
 
     # 1. Try the API endpoint for webcam images
     api_url = config["source"]["airports_api_url"]
-    webcam_api = api_url.rstrip("/").rsplit("/airports", 1)[0] + f"/v1/airports/{code}/webcams"
+    base = api_url.rstrip("/").rsplit("/airports", 1)[0]
+    webcam_api = f"{base}/v1/airports/{code}/webcams"
     try:
         resp = requests.get(webcam_api, timeout=timeout)
         if resp.ok:
@@ -130,7 +143,9 @@ def fetch_image_urls(airport: dict, config: dict) -> list[str]:
 def _extract_urls_from_api(data: dict | list, base_url: str) -> list[str]:
     """Extract image URLs from a webcam API response."""
     urls = []
-    items = data if isinstance(data, list) else data.get("webcams", data.get("data", []))
+    items = (
+        data if isinstance(data, list) else data.get("webcams", data.get("data", []))
+    )
     for item in items:
         if isinstance(item, dict):
             for key in ("image_url", "url", "src", "snapshot_url"):
@@ -154,7 +169,7 @@ def _scrape_image_urls(html: str, base_url: str) -> list[str]:
         if start == -1:
             break
         end = lower.find(">", start)
-        tag = html[start:end + 1]
+        tag = html[start : end + 1]
         src = _extract_attr(tag, "src")
         if src and _looks_like_webcam(src):
             urls.append(_absolute_url(src, base_url))
@@ -165,7 +180,7 @@ def _scrape_image_urls(html: str, base_url: str) -> list[str]:
 def _extract_attr(tag: str, attr: str) -> str:
     """Extract an attribute value from an HTML tag string."""
     lower = tag.lower()
-    search = f'{attr}='
+    search = f"{attr}="
     idx = lower.find(search)
     if idx == -1:
         return ""
@@ -175,7 +190,7 @@ def _extract_attr(tag: str, attr: str) -> str:
     quote = tag[idx]
     if quote in ('"', "'"):
         end = tag.find(quote, idx + 1)
-        return tag[idx + 1:end] if end != -1 else ""
+        return tag[idx + 1 : end] if end != -1 else ""
     # unquoted attribute
     end = len(tag)
     for ch in (" ", ">", "\t", "\n"):
@@ -190,7 +205,9 @@ def _looks_like_webcam(src: str) -> bool:
     lower = src.lower()
     image_exts = (".jpg", ".jpeg", ".webp", ".png", ".gif")
     webcam_keywords = ("webcam", "camera", "cam", "snapshot", "image", "photo")
-    has_image_ext = any(lower.endswith(ext) or (ext + "?") in lower for ext in image_exts)
+    has_image_ext = any(
+        lower.endswith(ext) or (ext + "?") in lower for ext in image_exts
+    )
     has_keyword = any(kw in lower for kw in webcam_keywords)
     return has_image_ext and has_keyword
 
@@ -205,6 +222,7 @@ def _absolute_url(url: str, base_url: str) -> str:
 # ---------------------------------------------------------------------------
 # Download and save
 # ---------------------------------------------------------------------------
+
 
 def download_image(url: str, config: dict) -> bytes | None:
     """
@@ -222,13 +240,20 @@ def download_image(url: str, config: dict) -> bytes | None:
             resp.raise_for_status()
             content_type = resp.headers.get("content-type", "")
             if not content_type.startswith("image/"):
-                logger.debug("Skipping non-image URL %s (content-type: %s)", url, content_type)
+                logger.debug(
+                    "Skipping non-image URL %s (content-type: %s)",
+                    url,
+                    content_type,
+                )
                 return None
             return resp.content
         except requests.RequestException as exc:
             logger.warning(
                 "Attempt %d/%d: failed to download %s: %s",
-                attempt, retries, url, exc,
+                attempt,
+                retries,
+                url,
+                exc,
             )
             if attempt < retries:
                 time.sleep(delay)
@@ -237,7 +262,13 @@ def download_image(url: str, config: dict) -> bytes | None:
     return None
 
 
-def save_image(image_data: bytes, url: str, airport_code: str, config: dict, timestamp: datetime | None = None) -> str | None:
+def save_image(
+    image_data: bytes,
+    url: str,
+    airport_code: str,
+    config: dict,
+    timestamp: datetime | None = None,
+) -> str | None:
     """
     Save image bytes to the archive directory.
 
@@ -303,6 +334,7 @@ def _file_md5(path: str) -> str:
 # Retention / cleanup
 # ---------------------------------------------------------------------------
 
+
 def apply_retention(config: dict) -> int:
     """
     Delete archived files older than ``archive.retention_days``.
@@ -328,7 +360,11 @@ def apply_retention(config: dict) -> int:
                 pass
 
     if deleted:
-        logger.info("Retention cleanup: deleted %d file(s) older than %d days.", deleted, retention_days)
+        logger.info(
+            "Retention cleanup: deleted %d file(s) older than %d days.",
+            deleted,
+            retention_days,
+        )
 
     return deleted
 
@@ -337,6 +373,7 @@ def apply_retention(config: dict) -> int:
 # High-level archive run
 # ---------------------------------------------------------------------------
 
+
 def run_archive(config: dict, stats: dict | None = None) -> dict:
     """
     Perform a single full archive pass.
@@ -344,10 +381,16 @@ def run_archive(config: dict, stats: dict | None = None) -> dict:
     Fetches the airport list, selects configured airports, fetches and saves
     images for each, and applies retention policy.
 
-    Returns a stats dict with keys: airports_processed, images_fetched, images_saved, errors.
+    Returns a stats dict with keys: airports_processed, images_fetched,
+    images_saved, errors.
     """
     if stats is None:
-        stats = {"airports_processed": 0, "images_fetched": 0, "images_saved": 0, "errors": 0}
+        stats = {
+            "airports_processed": 0,
+            "images_fetched": 0,
+            "images_saved": 0,
+            "errors": 0,
+        }
 
     logger.info("Starting archive run...")
     run_ts = datetime.now(timezone.utc)
@@ -390,7 +433,8 @@ def run_archive(config: dict, stats: dict | None = None) -> dict:
 
     apply_retention(config)
     logger.info(
-        "Archive run complete: %d airport(s), %d image(s) fetched, %d saved, %d error(s).",
+        "Archive run complete: %d airport(s), %d image(s) fetched, "
+        "%d saved, %d error(s).",
         stats["airports_processed"],
         stats["images_fetched"],
         stats["images_saved"],

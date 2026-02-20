@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 
-from app.config import load_config, save_config
+from app.config import save_config
 from app.scheduler import get_state, trigger_run
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,7 @@ app = Flask(__name__)
 # ---------------------------------------------------------------------------
 # Context / helpers
 # ---------------------------------------------------------------------------
+
 
 def _archive_tree(output_dir: str) -> dict:
     """
@@ -75,7 +76,7 @@ def _archive_stats(output_dir: str) -> dict:
             try:
                 total_files += 1
                 total_size += os.path.getsize(fpath)
-                # archive structure: output_dir/YYYY/MM/DD/AIRPORT/file — airport is the parent dir
+                # archive: output_dir/YYYY/MM/DD/AIRPORT/file — airport is parent
                 parts = fpath.replace(output_dir, "").strip(os.sep).split(os.sep)
                 if len(parts) >= 2:
                     airports.add(parts[-2])
@@ -92,6 +93,7 @@ def _archive_stats(output_dir: str) -> dict:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
 
 @app.route("/")
 def dashboard():
@@ -155,25 +157,33 @@ def api_status():
     config = app.config["ARCHIVER_CONFIG"]
     output_dir = config["archive"]["output_dir"]
     archive_stats = _archive_stats(output_dir)
-    return jsonify({
-        "status": "ok",
-        "running": state.get("running", False),
-        "last_run": state.get("last_run").isoformat() if state.get("last_run") else None,
-        "next_run": state.get("next_run").isoformat() if state.get("next_run") else None,
-        "run_count": state.get("run_count", 0),
-        "last_stats": state.get("last_stats"),
-        "archive": archive_stats,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
+    return jsonify(
+        {
+            "status": "ok",
+            "running": state.get("running", False),
+            "last_run": (
+                state.get("last_run").isoformat() if state.get("last_run") else None
+            ),
+            "next_run": (
+                state.get("next_run").isoformat() if state.get("next_run") else None
+            ),
+            "run_count": state.get("run_count", 0),
+            "last_stats": state.get("last_stats"),
+            "archive": archive_stats,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
 # Form helpers
 # ---------------------------------------------------------------------------
 
+
 def _form_to_config(form, existing_config: dict) -> dict:
     """Convert web form POST data into a config dict."""
     import copy
+
     config = copy.deepcopy(existing_config)
 
     # Schedule
@@ -197,7 +207,11 @@ def _form_to_config(form, existing_config: dict) -> dict:
     # Airports
     config["airports"]["archive_all"] = "archive_all" in form
     selected_raw = form.get("selected_airports", "")
-    selected = [c.strip().upper() for c in selected_raw.replace(",", "\n").splitlines() if c.strip()]
+    selected = [
+        c.strip().upper()
+        for c in selected_raw.replace(",", "\n").splitlines()
+        if c.strip()
+    ]
     config["airports"]["selected"] = selected
 
     # Source
