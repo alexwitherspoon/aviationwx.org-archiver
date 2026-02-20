@@ -1,0 +1,25 @@
+services:
+  archiver:
+    build: .
+    container_name: aviationwx-archiver
+    restart: unless-stopped
+
+    ports:
+      - "8080:8080"
+
+    volumes:
+      # Persist archived images on the host
+      - ./archive:/archive
+      # Mount your config file into the container
+      # Copy config/config.yaml.example to config/config.yaml and customise it
+      - ./config/config.yaml:/config/config.yaml:ro
+
+    environment:
+      - ARCHIVER_CONFIG=/config/config.yaml
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/status')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

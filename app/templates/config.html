@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Configuration — AviationWX Archiver{% endblock %}
+
+{% block content %}
+<h1>Configuration</h1>
+<p class="subtitle">Adjust archiver settings. Changes take effect immediately after saving.</p>
+
+{% if message %}
+<div class="alert alert-success">{{ message }}</div>
+{% endif %}
+{% if error %}
+<div class="alert alert-error">{{ error }}</div>
+{% endif %}
+
+<form method="post" action="{{ url_for('configuration') }}">
+
+  <!-- Schedule -->
+  <div class="card">
+    <h2>Schedule</h2>
+    <div class="grid-2">
+      <div>
+        <label for="interval_minutes">Fetch interval (minutes)</label>
+        <input type="number" id="interval_minutes" name="interval_minutes"
+               min="1" max="1440"
+               value="{{ config.schedule.interval_minutes }}">
+      </div>
+      <div style="padding-top:22px">
+        <div class="checkbox-row">
+          <input type="checkbox" id="fetch_on_start" name="fetch_on_start"
+                 {% if config.schedule.fetch_on_start %}checked{% endif %}>
+          <label for="fetch_on_start" style="margin:0; color:var(--text)">Run archive immediately on container start</label>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Archive -->
+  <div class="card">
+    <h2>Archive Storage</h2>
+    <div class="grid-2">
+      <div>
+        <label for="output_dir">Archive output directory (inside container)</label>
+        <input type="text" id="output_dir" name="output_dir"
+               value="{{ config.archive.output_dir }}"
+               placeholder="/archive">
+        <small style="color:var(--text-muted)">Mount a host directory to this path to persist data.</small>
+      </div>
+      <div>
+        <label for="retention_days">Retention (days, 0 = unlimited)</label>
+        <input type="number" id="retention_days" name="retention_days"
+               min="0"
+               value="{{ config.archive.retention_days }}">
+      </div>
+    </div>
+  </div>
+
+  <!-- Airports -->
+  <div class="card">
+    <h2>Airports</h2>
+    <div class="checkbox-row">
+      <input type="checkbox" id="archive_all" name="archive_all"
+             {% if config.airports.archive_all %}checked{% endif %}
+             onchange="document.getElementById('selected-block').style.display=this.checked?'none':'block'">
+      <label for="archive_all" style="margin:0; color:var(--text)">Archive ALL airports available on AviationWX.org</label>
+    </div>
+    <div id="selected-block" {% if config.airports.archive_all %}style="display:none"{% endif %}>
+      <label for="selected_airports">Airport codes to archive (one per line, or comma-separated)</label>
+      <textarea id="selected_airports" name="selected_airports" rows="6"
+                placeholder="KSPB&#10;KAWO&#10;KPWT">{{ config.airports.selected | join('\n') }}</textarea>
+    </div>
+  </div>
+
+  <!-- Source -->
+  <div class="card">
+    <h2>Source</h2>
+    <div class="grid-2">
+      <div>
+        <label for="base_url">AviationWX.org base URL</label>
+        <input type="url" id="base_url" name="base_url"
+               value="{{ config.source.base_url }}"
+               placeholder="https://aviationwx.org">
+      </div>
+      <div>
+        <label for="log_level">Log level</label>
+        <select id="log_level" name="log_level">
+          {% for level in ['DEBUG', 'INFO', 'WARNING', 'ERROR'] %}
+          <option value="{{ level }}" {% if config.logging.level == level %}selected{% endif %}>{{ level }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <button type="submit" class="primary">💾 Save Configuration</button>
+  <a href="{{ url_for('dashboard') }}" class="btn" style="margin-left:8px">Cancel</a>
+
+</form>
+{% endblock %}
