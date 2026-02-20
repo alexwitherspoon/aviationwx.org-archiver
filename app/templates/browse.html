@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Browse Archive — AviationWX Archiver{% endblock %}
+
+{% block content %}
+<h1>Browse Archive</h1>
+<p class="subtitle">Explore archived images organised by year / month / day / airport</p>
+
+{% if not tree %}
+  <div class="card">
+    <p class="empty">No archived images found yet. Run the archiver from the <a href="{{ url_for('dashboard') }}">Dashboard</a> to get started.</p>
+  </div>
+{% else %}
+  {% for year, months in tree.items() %}
+  <details open>
+    <summary class="card" style="margin-bottom:4px; font-weight:600; font-size:15px;">📅 {{ year }}</summary>
+    {% for month, days in months.items() %}
+    <details style="margin-left:16px;">
+      <summary class="card" style="margin-bottom:4px; font-weight:500;">
+        {{ year }}-{{ month }}
+        <span class="badge badge-info" style="margin-left:8px">
+          {{ days.values() | map('length') | list | sum }} file(s)
+        </span>
+      </summary>
+      {% for day, airports in days.items() %}
+      <details style="margin-left:16px;">
+        <summary class="card" style="margin-bottom:4px;">
+          {{ year }}-{{ month }}-{{ day }}
+          &nbsp;&mdash;&nbsp;
+          {% for airport in airports.keys() %}
+            <span class="badge badge-info">{{ airport }}</span>
+          {% endfor %}
+        </summary>
+        {% for airport, files in airports.items() %}
+        <div class="card" style="margin-left:16px; margin-bottom:8px;">
+          <h2>{{ airport }} &mdash; {{ year }}-{{ month }}-{{ day }}</h2>
+          {% if files %}
+            <div style="overflow-x:auto;">
+              <table style="width:100%; border-collapse:collapse; font-size:12px; font-family:monospace;">
+                <thead>
+                  <tr style="border-bottom:1px solid var(--border); text-align:left; color:var(--text-muted);">
+                    <th style="padding:4px 8px;">#</th>
+                    <th style="padding:4px 8px;">Filename</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for fname in files %}
+                  <tr style="border-bottom:1px solid var(--border);">
+                    <td style="padding:4px 8px; color:var(--text-muted);">{{ loop.index }}</td>
+                    <td style="padding:4px 8px;">{{ fname }}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <p class="empty">No files.</p>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </details>
+      {% endfor %}
+    </details>
+    {% endfor %}
+  </details>
+  {% endfor %}
+{% endif %}
+{% endblock %}

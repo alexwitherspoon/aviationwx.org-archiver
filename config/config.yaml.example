@@ -1,0 +1,86 @@
+# AviationWX.org Archiver - Example Configuration
+#
+# Copy this file to config/config.yaml and adjust to your needs.
+# This file is the single source of truth for the archiver system.
+# It can be mounted into the Docker container via a volume or passed as a bind mount.
+
+# ============================================================
+# Archive Settings
+# ============================================================
+archive:
+  # Base directory for archived images (inside the container)
+  # Mount a host volume to this path to persist data outside the container.
+  output_dir: /archive
+
+  # Directory structure: output_dir/YYYY/MM/DD/AIRPORT_CODE/filename
+  # Example: /archive/2024/06/15/KSPB/webcam_20240615_143000.jpg
+
+  # Maximum number of days to retain archived files (0 = unlimited)
+  retention_days: 0
+
+# ============================================================
+# Fetch Schedule
+# ============================================================
+schedule:
+  # How frequently to check for and fetch new images (in minutes)
+  interval_minutes: 15
+
+  # Run an immediate fetch on startup before waiting for the first interval
+  fetch_on_start: true
+
+# ============================================================
+# AviationWX.org Source
+# ============================================================
+source:
+  # Base URL of the AviationWX.org platform
+  base_url: https://aviationwx.org
+
+  # Public API endpoint for airport list
+  airports_api_url: https://api.aviationwx.org/v1/airports
+
+  # HTTP request timeout in seconds
+  request_timeout: 30
+
+  # Number of retries on transient failures
+  max_retries: 3
+
+  # Delay between retries in seconds
+  retry_delay: 5
+
+# ============================================================
+# Airports to Archive
+# ============================================================
+airports:
+  # Set to true to archive ALL airports available on AviationWX.org.
+  # When false, only the airports listed below are archived.
+  archive_all: false
+
+  # List of airport codes to archive (ICAO or FAA identifiers).
+  # Only used when archive_all is false.
+  # Example: ["KSPB", "KAWO", "KPWT"]
+  selected:
+    - KSPB
+    - KAWO
+
+# ============================================================
+# Web GUI
+# ============================================================
+web:
+  # Port the local web GUI listens on
+  port: 8080
+
+  # Host to bind to (0.0.0.0 = all interfaces inside the container)
+  host: 0.0.0.0
+
+  # Number of most recent log entries to display on the dashboard
+  log_display_count: 100
+
+# ============================================================
+# Logging
+# ============================================================
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: INFO
+
+  # Log file path inside the container (leave empty to log to stdout only)
+  file: ""
