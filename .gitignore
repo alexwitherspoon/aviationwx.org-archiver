@@ -1,0 +1,104 @@
+# Sensitive configuration files (DO NOT COMMIT)
+config/config.yaml
+
+# Archive data (large binary files)
+archive/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg-info/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+._*
+.DS_Store?
+.Spotlight-V100
+.Trashes
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Environment variables (local overrides only)
+.env
+.env.local
+.env.*.local
+
+# Docker Compose local overrides
+docker-compose.override.yml
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+.temp/
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Diagnostic and temporary documentation files (never commit)
+docs/*DIAGNOSTICS*.md
+docs/*TROUBLESHOOTING*.md
+docs/*TEMP*.md
+docs/*ANALYSIS*.md
+docs/*CHECKLIST*.md
+docs/*PLAN*.md
+docs/*PLANNING*.md
+
+# AI-generated temp files (anywhere in repo — delete before committing)
+**/*RESEARCH*.md
+**/*ANALYSIS*.md
+**/*PLAN*.md
+**/*PLANNING*.md
+**/*CHECKLIST*.md
+**/*DIAGNOSTICS*.md
+**/*TROUBLESHOOTING*.md
+**/*TEMP*.md
+# PR template is not an AI temp file
+!.github/pull_request_template.md
+.cursor/plans/
+
+# AI-specific configuration files (keep local only)
+.cursorrules
+.cursor/
+*.cursorrules
+.cursorrc
+
+# Additional IDE files
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.settings/

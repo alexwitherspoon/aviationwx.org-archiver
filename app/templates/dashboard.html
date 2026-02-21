@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — AviationWX Archiver{% endblock %}
+
+{% block content %}
+<h1>Dashboard</h1>
+<p class="subtitle">Archive status and recent activity</p>
+
+<!-- Status row -->
+<div class="grid-4">
+  <div class="card stat">
+    <div class="value">{{ archive_stats.total_files }}</div>
+    <div class="label">Archived Images</div>
+  </div>
+  <div class="card stat">
+    <div class="value">{{ archive_stats.total_size_mb }}</div>
+    <div class="label">Archive Size (MB)</div>
+  </div>
+  <div class="card stat">
+    <div class="value">{{ archive_stats.airports | length }}</div>
+    <div class="label">Airports Archived</div>
+  </div>
+  <div class="card stat">
+    <div class="value">{{ state.run_count }}</div>
+    <div class="label">Archive Runs</div>
+  </div>
+</div>
+
+<!-- Run status -->
+<div class="card">
+  <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+    <div>
+      <h2 style="margin:0">Archiver Status</h2>
+      <div style="margin-top:6px; display:flex; gap:12px; flex-wrap:wrap; font-size:13px; color:var(--text-muted);">
+        <span>
+          Status:
+          {% if state.running %}
+            <span class="badge badge-warning">Running</span>
+          {% else %}
+            <span class="badge badge-success">Idle</span>
+          {% endif %}
+        </span>
+        <span>
+          Last run:
+          {% if state.last_run %}
+            {{ state.last_run.strftime('%Y-%m-%d %H:%M:%S UTC') }}
+          {% else %}
+            <em>Never</em>
+          {% endif %}
+        </span>
+        <span>
+          Next scheduled:
+          {% if state.next_run %}
+            {{ state.next_run.strftime('%Y-%m-%d %H:%M:%S %Z') }}
+          {% else %}
+            <em>Unknown</em>
+          {% endif %}
+        </span>
+        <span>Interval: {{ config.schedule.interval_minutes }} min</span>
+      </div>
+
+      {% if state.last_stats %}
+      <div style="margin-top:8px; font-size:12px; color:var(--text-muted);">
+        Last run stats —
+        airports: {{ state.last_stats.airports_processed }},
+        fetched: {{ state.last_stats.images_fetched }},
+        saved: {{ state.last_stats.images_saved }},
+        errors:
+        {% if state.last_stats.errors > 0 %}
+          <span style="color:var(--error)">{{ state.last_stats.errors }}</span>
+        {% else %}
+          0
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+
+    <form method="post" action="{{ url_for('trigger_archive') }}">
+      <button type="submit" class="primary" {% if state.running %}disabled{% endif %}>
+        ▶ Run Now
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- Recent Logs -->
+<div class="card">
+  <h2>Recent Log Entries</h2>
+  {% if recent_logs %}
+  <div class="log-wrap">
+    {% for entry in recent_logs %}
+    <div class="log-entry level-{{ entry.level }}">
+      <span class="ts">{{ entry.timestamp[:19].replace('T',' ') }}</span>
+      <span class="badge badge-{% if entry.level == 'ERROR' %}error{% elif entry.level == 'WARNING' %}warning{% else %}info{% endif %}" style="align-self:center">{{ entry.level }}</span>
+      <span class="msg">{{ entry.message }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+    <p class="empty">No log entries yet — run the archiver to see activity here.</p>
+  {% endif %}
+</div>
+
+<!-- Airports -->
+{% if archive_stats.airports %}
+<div class="card">
+  <h2>Archived Airports</h2>
+  <div style="display:flex; flex-wrap:wrap; gap:8px;">
+    {% for airport in archive_stats.airports %}
+      <span class="badge badge-info">{{ airport }}</span>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<script>
+  // Auto-refresh while a run is in progress
+  {% if state.running %}
+  setTimeout(function() { location.reload(); }, 5000);
+  {% endif %}
+</script>
+{% endblock %}

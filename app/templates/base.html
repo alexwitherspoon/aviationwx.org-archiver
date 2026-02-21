@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}AviationWX Archiver{% endblock %}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --accent: #1f6feb;
+      --accent-hover: #388bfd;
+      --success: #3fb950;
+      --warning: #d29922;
+      --error: #f85149;
+      --nav-h: 52px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    nav {
+      position: sticky; top: 0; z-index: 100;
+      height: var(--nav-h);
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 24px;
+      padding: 0 24px;
+    }
+
+    nav .brand {
+      font-weight: 700; font-size: 15px;
+      color: var(--text);
+      text-decoration: none;
+      display: flex; align-items: center; gap: 8px;
+    }
+
+    nav a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 13px;
+      padding: 4px 0;
+      border-bottom: 2px solid transparent;
+    }
+    nav a:hover, nav a.active { color: var(--text); border-bottom-color: var(--accent); }
+
+    main { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+    h1 { font-size: 22px; font-weight: 600; margin-bottom: 4px; }
+    h2 { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
+
+    .subtitle { color: var(--text-muted); margin-bottom: 24px; font-size: 13px; }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+
+    @media (max-width: 768px) {
+      .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+    }
+
+    .stat { text-align: center; }
+    .stat .value { font-size: 28px; font-weight: 700; color: var(--accent); }
+    .stat .label { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .badge-success { background: rgba(63, 185, 80, 0.15); color: var(--success); }
+    .badge-warning { background: rgba(210, 153, 34, 0.15); color: var(--warning); }
+    .badge-error   { background: rgba(248, 81, 73, 0.15);  color: var(--error); }
+    .badge-info    { background: rgba(31, 111, 235, 0.15); color: var(--accent); }
+
+    .log-entry {
+      font-family: "SF Mono", "Fira Mono", monospace;
+      font-size: 12px;
+      padding: 3px 0;
+      border-bottom: 1px solid var(--border);
+      display: flex; gap: 12px;
+    }
+    .log-entry:last-child { border-bottom: none; }
+    .log-entry .ts { color: var(--text-muted); white-space: nowrap; }
+    .log-entry.level-ERROR .msg { color: var(--error); }
+    .log-entry.level-WARNING .msg { color: var(--warning); }
+    .log-entry.level-INFO .msg { color: var(--text); }
+    .log-entry.level-DEBUG .msg { color: var(--text-muted); }
+
+    .log-wrap { max-height: 400px; overflow-y: auto; }
+
+    button, .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 7px 16px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      text-decoration: none;
+      transition: background 0.15s;
+    }
+    button:hover, .btn:hover { background: var(--border); }
+    button.primary, .btn.primary {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+    }
+    button.primary:hover, .btn.primary:hover { background: var(--accent-hover); }
+
+    label { display: block; font-size: 13px; margin-bottom: 4px; color: var(--text-muted); }
+
+    input[type="text"], input[type="number"], input[type="url"], select, textarea {
+      width: 100%;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+      font-size: 13px;
+      margin-bottom: 12px;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: 2px solid var(--accent); border-color: var(--accent);
+    }
+
+    .checkbox-row {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 12px;
+    }
+    .checkbox-row input[type="checkbox"] { width: auto; margin: 0; }
+
+    .alert {
+      padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 13px;
+    }
+    .alert-success { background: rgba(63,185,80,.1); border: 1px solid var(--success); color: var(--success); }
+    .alert-error   { background: rgba(248,81,73,.1);  border: 1px solid var(--error);   color: var(--error); }
+
+    .empty { color: var(--text-muted); font-style: italic; text-align: center; padding: 24px 0; }
+
+    details summary { cursor: pointer; user-select: none; padding: 4px 0; }
+    details[open] summary { margin-bottom: 8px; }
+
+    footer {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 11px;
+      padding: 24px;
+      border-top: 1px solid var(--border);
+      margin-top: 40px;
+    }
+    footer a { color: var(--accent); text-decoration: none; }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <nav>
+    <a href="{{ url_for('dashboard') }}" class="brand">✈️ AviationWX Archiver</a>
+    <a href="{{ url_for('dashboard') }}"{% if request.endpoint == 'dashboard' %} class="active"{% endif %}>Dashboard</a>
+    <a href="{{ url_for('browse') }}"{% if request.endpoint == 'browse' %} class="active"{% endif %}>Browse</a>
+    <a href="{{ url_for('configuration') }}"{% if request.endpoint == 'configuration' %} class="active"{% endif %}>Config</a>
+  </nav>
+
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer>
+    <a href="https://github.com/alexwitherspoon/aviationwx.org-archiver" target="_blank" rel="noopener">AviationWX.org Archiver</a>
+    &mdash; Part of the <a href="https://aviationwx.org" target="_blank" rel="noopener">AviationWX.org</a> project &mdash;
+    MIT License
+  </footer>
+</body>
+</html>

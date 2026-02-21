@@ -1,0 +1,57 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+docs/
+README.md
+LICENSE
+
+# CI/CD
+.github/
+
+# Tests
+tests/
+
+# Development files
+Makefile
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python cache (created in container)
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+
+# Archive data (mounted as volume)
+archive/
+
+# Temporary files
+*.log
+*.tmp
+*.temp
+
+# Environment files (use volumes/secrets instead)
+.env
+.env.*
+
+# Local config override (use mounted config file instead)
+config/config.yaml
+
+# Docker Compose override files
+docker-compose.override.yml
