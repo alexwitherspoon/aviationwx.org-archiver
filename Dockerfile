@@ -7,7 +7,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1 — dependency install
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS deps
+FROM python:3.14-slim AS deps
 
 WORKDIR /build
 
@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 # ---------------------------------------------------------------------------
 # Stage 2 — final image
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 LABEL org.opencontainers.image.title="AviationWX.org Archiver" \
       org.opencontainers.image.description="Archives webcam images from AviationWX.org" \
