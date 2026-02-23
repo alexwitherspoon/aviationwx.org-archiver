@@ -140,7 +140,7 @@ The container runs as a non-root user. Persist data by mounting host directories
 | Host path (your choice) | Container path | Purpose |
 |-------------------------|----------------|---------|
 | `./archive` or `/mnt/user/aviationwx/archive` | `/archive` | Archived images (required for persistence) |
-| `./config/config.yaml` | `/config/config.yaml` | Config file (read-only recommended) |
+| `./config/config.yaml` | `/config/config.yaml` | Config file (read/write — web GUI saves changes) |
 
 **Example with pre-built image:**
 
@@ -155,7 +155,7 @@ docker run -d \
   --name aviationwx-archiver \
   -p 8080:8080 \
   -v /path/on/host/archive:/archive \
-  -v /path/on/host/config/config.yaml:/config/config.yaml:ro \
+  -v /path/on/host/config/config.yaml:/config/config.yaml \
   -e ARCHIVER_CONFIG=/config/config.yaml \
   ghcr.io/alexwitherspoon/aviationwx.org-archiver:latest
 ```
@@ -167,7 +167,7 @@ On Unraid or similar, use your data path (e.g. `/mnt/user/appdata/aviationwx/arc
 ```yaml
 volumes:
   - ./archive:/archive
-  - ./config/config.yaml:/config/config.yaml:ro
+  - ./config/config.yaml:/config/config.yaml  # read/write so web GUI can save
 ```
 
 ## Requirements
