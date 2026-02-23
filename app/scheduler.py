@@ -12,6 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from app.archiver import run_archive
+from app.config import validate_config
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,13 @@ class _SchedulerLogHandler(logging.Handler):
 
 def _archive_job(config: dict) -> None:
     """Scheduled job: run one archive pass and update shared state."""
+    errors = validate_config(config)
+    if errors:
+        for err in errors:
+            logger.warning("Config validation: %s", err)
+            _append_log(f"Config error: {err}", "WARNING")
+        return
+
     with _state_lock:
         if _state["running"]:
             logger.warning("Archive run skipped — previous run still in progress.")
@@ -87,32 +95,40 @@ def _archive_job(config: dict) -> None:
             _state["running"] = False
 
 
-def start_scheduler(config: dict) -> BackgroundScheduler:
+def start_scheduler(config_getter) -> BackgroundScheduler:
     """
     Create, configure, and start the background scheduler.
 
-    Returns the scheduler so the caller can shut it down gracefully.
+    Args:
+        config_getter: Callable returning the current config dict. Used so
+            config changes via the web UI are picked up on each scheduled run.
+
+    Returns:
+        The scheduler instance for graceful shutdown.
     """
-    # Attach a log handler so archiver log messages appear in the web GUI
+    # Attach handler so archiver logs appear in the web GUI
     handler = _SchedulerLogHandler()
     handler.setFormatter(logging.Formatter("%(message)s"))
     logging.getLogger("app.archiver").addHandler(handler)
     logging.getLogger("app.scheduler").addHandler(handler)
 
+    def _job_wrapper() -> None:
+        config = config_getter()
+        _archive_job(config)
+
+    config = config_getter()
     interval_minutes = config["schedule"].get("interval_minutes", 15)
 
     scheduler = BackgroundScheduler(daemon=True)
     scheduler.add_job(
-        _archive_job,
+        _job_wrapper,
         trigger=IntervalTrigger(minutes=interval_minutes),
-        args=[config],
         id="archive",
         name="AviationWX Archiver",
         replace_existing=True,
     )
     scheduler.start()
 
-    # Update next_run in state after scheduler has started
     job = scheduler.get_job("archive")
     if job and job.next_run_time:
         with _state_lock:
@@ -124,7 +140,7 @@ def start_scheduler(config: dict) -> BackgroundScheduler:
     if config["schedule"].get("fetch_on_start", True):
         logger.info("fetch_on_start is enabled — running initial archive pass.")
         _append_log("Running initial archive pass (fetch_on_start).", "INFO")
-        threading.Thread(target=_archive_job, args=[config], daemon=True).start()
+        threading.Thread(target=_job_wrapper, daemon=True).start()
 
     return scheduler
 
@@ -133,8 +149,14 @@ def trigger_run(config: dict) -> bool:
     """
     Trigger an immediate archive run in a background thread.
 
-    Returns False if a run is already in progress.
+    Args:
+        config: Configuration dict for the archive run.
+
+    Returns:
+        True if the run was started, False if already running or config invalid.
     """
+    if validate_config(config):
+        return False
     with _state_lock:
         if _state["running"]:
             return False

@@ -5,6 +5,13 @@
 <h1>Dashboard</h1>
 <p class="subtitle">Archive status and recent activity</p>
 
+{% if config_errors %}
+<div class="alert alert-error">
+  <strong>Configuration incomplete — archiving will not run until fixed.</strong>
+  <a href="{{ url_for('configuration') }}">Go to Config</a> to set up airports and save.
+</div>
+{% endif %}
+
 <!-- Status row -->
 <div class="grid-4">
   <div class="card stat">
@@ -75,7 +82,8 @@
     </div>
 
     <form method="post" action="{{ url_for('trigger_archive') }}">
-      <button type="submit" class="primary" {% if state.running %}disabled{% endif %}>
+      <button type="submit" class="primary" {% if state.running or config_errors %}disabled{% endif %}
+              title="{% if config_errors %}Complete configuration first{% elif state.running %}Run in progress{% endif %}">
         ▶ Run Now
       </button>
     </form>

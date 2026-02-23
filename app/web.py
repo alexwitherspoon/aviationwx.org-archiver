@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 
-from app.config import save_config
+from app.config import save_config, validate_config
 from app.scheduler import get_state, trigger_run
 
 logger = logging.getLogger(__name__)
@@ -98,6 +98,7 @@ def _archive_stats(output_dir: str) -> dict:
 @app.route("/")
 def dashboard():
     config = app.config["ARCHIVER_CONFIG"]
+    config_errors = validate_config(config)
     state = get_state()
     output_dir = config["archive"]["output_dir"]
     archive_stats = _archive_stats(output_dir)
@@ -109,12 +110,15 @@ def dashboard():
         archive_stats=archive_stats,
         recent_logs=recent_logs,
         config=config,
+        config_errors=config_errors,
     )
 
 
 @app.route("/run", methods=["POST"])
 def trigger_archive():
     config = app.config["ARCHIVER_CONFIG"]
+    if validate_config(config):
+        return redirect(url_for("configuration"))
     started = trigger_run(config)
     if started:
         logger.info("Manual archive run triggered via web GUI.")
@@ -139,7 +143,14 @@ def configuration():
         except ValueError as exc:
             error = f"Invalid configuration: {exc}"
 
-    return render_template("config.html", config=config, message=message, error=error)
+    config_errors = validate_config(config)
+    return render_template(
+        "config.html",
+        config=config,
+        message=message,
+        error=error,
+        config_errors=config_errors,
+    )
 
 
 @app.route("/browse")

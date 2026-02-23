@@ -95,6 +95,33 @@ def load_config(config_path: str | None = None) -> dict:
     return config
 
 
+def validate_config(config: dict) -> list[str]:
+    """
+    Validate configuration for minimal operation.
+
+    Args:
+        config: Configuration dict (from load_config or similar).
+
+    Returns:
+        List of error messages. Empty list means config is valid.
+    """
+    errors: list[str] = []
+
+    archive_all = config.get("airports", {}).get("archive_all", False)
+    selected = config.get("airports", {}).get("selected", [])
+    if not archive_all and not selected:
+        errors.append(
+            "Select at least one airport: enable 'Archive all airports' or add "
+            "airport codes (e.g. KSPB, KAWO) to the selected list."
+        )
+
+    output_dir = (config.get("archive", {}).get("output_dir") or "").strip()
+    if not output_dir:
+        errors.append("Archive output directory must not be empty.")
+
+    return errors
+
+
 def save_config(config: dict, config_path: str | None = None) -> bool:
     """
     Save configuration to the YAML file.

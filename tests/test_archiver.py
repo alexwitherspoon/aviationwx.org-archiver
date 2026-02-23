@@ -85,6 +85,53 @@ def test_load_config_invalid_yaml():
         os.unlink(tmp_path)
 
 
+def test_validate_config_requires_airports():
+    """Config is invalid when no airports are selected."""
+    from app.config import validate_config
+
+    config = {
+        "archive": {"output_dir": "/archive", "retention_days": 0},
+        "airports": {"archive_all": False, "selected": []},
+    }
+    errors = validate_config(config)
+    assert len(errors) >= 1
+    assert "airport" in errors[0].lower()
+
+
+def test_validate_config_valid_with_archive_all():
+    """Config is valid when archive_all is True."""
+    from app.config import validate_config
+
+    config = {
+        "archive": {"output_dir": "/archive", "retention_days": 0},
+        "airports": {"archive_all": True, "selected": []},
+    }
+    assert validate_config(config) == []
+
+
+def test_validate_config_valid_with_selected():
+    """Config is valid when at least one airport is selected."""
+    from app.config import validate_config
+
+    config = {
+        "archive": {"output_dir": "/archive", "retention_days": 0},
+        "airports": {"archive_all": False, "selected": ["KSPB"]},
+    }
+    assert validate_config(config) == []
+
+
+def test_validate_config_requires_output_dir():
+    """Config is invalid when output_dir is empty."""
+    from app.config import validate_config
+
+    config = {
+        "archive": {"output_dir": "", "retention_days": 0},
+        "airports": {"archive_all": True, "selected": []},
+    }
+    errors = validate_config(config)
+    assert any("output" in e.lower() or "directory" in e.lower() for e in errors)
+
+
 # ---------------------------------------------------------------------------
 # Airport selection tests
 # ---------------------------------------------------------------------------
@@ -366,13 +413,14 @@ def test_apply_retention_removes_old_files():
 
 @pytest.fixture
 def flask_client():
-    """Create a Flask test client with a minimal config."""
+    """Create a Flask test client with a minimal valid config."""
     import copy
 
     from app.config import DEFAULT_CONFIG
     from app.web import app as flask_app
 
     config = copy.deepcopy(DEFAULT_CONFIG)
+    config["airports"]["selected"] = ["KSPB"]  # Valid: at least one airport
     flask_app.config["ARCHIVER_CONFIG"] = config
     flask_app.config["TESTING"] = True
     with flask_app.test_client() as client:
@@ -406,5 +454,23 @@ def test_config_page_returns_200(flask_client):
 
 
 def test_trigger_archive_redirects(flask_client):
+    """Valid config: trigger redirects to dashboard."""
     resp = flask_client.post("/run")
-    assert resp.status_code == 302  # redirect to dashboard
+    assert resp.status_code == 302
+    loc = resp.headers.get("Location", "")
+    assert loc.endswith("/") or "dashboard" in loc
+
+
+def test_trigger_archive_invalid_config_redirects_to_config():
+    """Invalid config: trigger redirects to config page."""
+    from app.config import DEFAULT_CONFIG
+    from app.web import app as flask_app
+
+    config = dict(DEFAULT_CONFIG)
+    config["airports"] = {"archive_all": False, "selected": []}  # Invalid
+    flask_app.config["ARCHIVER_CONFIG"] = config
+    flask_app.config["TESTING"] = True
+    with flask_app.test_client() as client:
+        resp = client.post("/run")
+    assert resp.status_code == 302
+    assert "config" in resp.headers.get("Location", "")
