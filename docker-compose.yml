@@ -10,9 +10,9 @@ services:
     volumes:
       # Persist archived images on the host
       - ./archive:/archive
-      # Mount your config file into the container
+      # Mount config (read/write so web GUI can save changes)
       # Copy config/config.yaml.example to config/config.yaml and customise it
-      - ./config/config.yaml:/config/config.yaml:ro
+      - ./config/config.yaml:/config/config.yaml
 
     environment:
       - ARCHIVER_CONFIG=/config/config.yaml
