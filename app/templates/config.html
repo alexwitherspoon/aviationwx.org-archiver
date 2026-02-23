@@ -4,7 +4,18 @@
 {% block content %}
 <h1>Configuration</h1>
 <p class="subtitle">Adjust archiver settings. Changes take effect immediately after saving.</p>
+<p class="subtitle" style="margin-top:-16px;">Minimal setup: set <strong>Archive output directory</strong> and select at least one airport (or enable <strong>Archive all</strong>).</p>
 
+{% if config_errors %}
+<div class="alert alert-error">
+  <strong>Configuration incomplete — archiving will not run until these are fixed:</strong>
+  <ul style="margin:8px 0 0 0; padding-left:20px;">
+    {% for err in config_errors %}
+    <li>{{ err }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
 {% if message %}
 <div class="alert alert-success">{{ message }}</div>
 {% endif %}
@@ -16,7 +27,7 @@
 
   <!-- Schedule -->
   <div class="card">
-    <h2>Schedule</h2>
+    <h2>Schedule <span class="field-hint">(optional)</span></h2>
     <div class="grid-2">
       <div>
         <label for="interval_minutes">Fetch interval (minutes)</label>
@@ -36,7 +47,7 @@
 
   <!-- Archive -->
   <div class="card">
-    <h2>Archive Storage</h2>
+    <h2>Archive Storage <span class="field-hint">(required)</span></h2>
     <div class="grid-2">
       <div>
         <label for="output_dir">Archive output directory (inside container)</label>
@@ -56,7 +67,7 @@
 
   <!-- Airports -->
   <div class="card">
-    <h2>Airports</h2>
+    <h2>Airports <span class="field-hint">(required)</span></h2>
     <div class="checkbox-row">
       <input type="checkbox" id="archive_all" name="archive_all"
              {% if config.airports.archive_all %}checked{% endif %}
@@ -64,7 +75,7 @@
       <label for="archive_all" style="margin:0; color:var(--text)">Archive ALL airports available on AviationWX.org</label>
     </div>
     <div id="selected-block" {% if config.airports.archive_all %}style="display:none"{% endif %}>
-      <label for="selected_airports">Airport codes to archive (one per line, or comma-separated)</label>
+      <label for="selected_airports">Airport codes to archive (one per line, or comma-separated) — required if not archiving all</label>
       <textarea id="selected_airports" name="selected_airports" rows="6"
                 placeholder="KSPB&#10;KAWO&#10;KPWT">{{ config.airports.selected | join('\n') }}</textarea>
     </div>
@@ -72,7 +83,7 @@
 
   <!-- Source -->
   <div class="card">
-    <h2>Source</h2>
+    <h2>Source <span class="field-hint">(optional)</span></h2>
     <div class="grid-2">
       <div>
         <label for="base_url">AviationWX.org base URL</label>

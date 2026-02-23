@@ -41,11 +41,9 @@ def main() -> None:
     logger = logging.getLogger(__name__)
     logger.info("AviationWX.org Archiver starting up.")
 
-    # Expose config to Flask
+    # Scheduler uses getter so web UI config changes take effect on next run
     app.config["ARCHIVER_CONFIG"] = config
-
-    # Start background scheduler
-    scheduler = start_scheduler(config)
+    scheduler = start_scheduler(lambda: app.config["ARCHIVER_CONFIG"])
 
     host = config["web"]["host"]
     port = int(config["web"]["port"])
