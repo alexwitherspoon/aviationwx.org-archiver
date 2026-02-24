@@ -1,32 +1,32 @@
 # AviationWX.org Archiver - Example Configuration
 #
-# Copy this file to config/config.yaml and adjust to your needs.
-# This file is the single source of truth for the archiver system.
-# It can be mounted into the Docker container via a volume or passed as a bind mount.
+# Config lives in the config_data named volume. Edit via web GUI or override
+# with ARCHIVER_* env vars (see README).
 
 # ============================================================
 # Archive Settings
 # ============================================================
 archive:
-  # Base directory for archived images (inside the container)
-  # Mount a host volume to this path to persist data outside the container.
+  # Where archived images are saved. Docker: ./archive bind-mounted here.
   output_dir: /archive
 
-  # Directory structure: output_dir/YYYY/MM/DD/AIRPORT_CODE/filename
-  # Example: /archive/2024/06/15/KSPB/webcam_20240615_143000.jpg
+  # Layout: output_dir/YYYY/MM/DD/AIRPORT/filename
 
-  # Maximum number of days to retain archived files (0 = unlimited)
+  # Retention days (0 = unlimited)
   retention_days: 0
 
 # ============================================================
 # Fetch Schedule
 # ============================================================
 schedule:
-  # How frequently to check for and fetch new images (in minutes)
+  # Fetch interval (minutes)
   interval_minutes: 15
 
-  # Run an immediate fetch on startup before waiting for the first interval
+  # Run fetch immediately on startup
   fetch_on_start: true
+
+  # Max minutes per run; next run resumes from where it stopped.
+  job_timeout_minutes: 30
 
 # ============================================================
 # AviationWX.org Source
@@ -38,26 +38,30 @@ source:
   # Public API endpoint for airport list
   airports_api_url: https://api.aviationwx.org/v1/airports
 
-  # HTTP request timeout in seconds
+  # Partner API key (optional): 500/min vs 100/min anonymous. Get at aviationwx.org.
+  # api_key: ""
+
+  # Request timeout (seconds)
   request_timeout: 30
 
-  # Number of retries on transient failures
+  # Retries and delay between retries
   max_retries: 3
-
-  # Delay between retries in seconds
   retry_delay: 5
+
+  # History API: fetch all frames, download only missing. When false: one image per webcam per run.
+  use_history_api: true
+
+  # Delay between API requests (seconds). Anonymous: 100/min; Partner: 500/min. Set 0 for Partner keys.
+  request_delay_seconds: 1.2
 
 # ============================================================
 # Airports to Archive
 # ============================================================
 airports:
-  # Set to true to archive ALL airports available on AviationWX.org.
-  # When false, only the airports listed below are archived.
+  # Archive all airports when true; otherwise use selected list.
   archive_all: false
 
-  # List of airport codes to archive (ICAO or FAA identifiers).
-  # Only used when archive_all is false.
-  # Example: ["KSPB", "KAWO", "KPWT"]
+  # Airport codes (ICAO/FAA). Used only when archive_all is false.
   selected:
     - KSPB
     - KAWO
@@ -66,13 +70,13 @@ airports:
 # Web GUI
 # ============================================================
 web:
-  # Port the local web GUI listens on
+  # Web GUI port
   port: 8080
 
-  # Host to bind to (0.0.0.0 = all interfaces inside the container)
+  # Bind address (0.0.0.0 = all interfaces)
   host: 0.0.0.0
 
-  # Number of most recent log entries to display on the dashboard
+  # Log entries shown on dashboard
   log_display_count: 100
 
 # ============================================================
@@ -82,5 +86,5 @@ logging:
   # Log level: DEBUG, INFO, WARNING, ERROR
   level: INFO
 
-  # Log file path inside the container (leave empty to log to stdout only)
+  # Log file path (empty = stdout only)
   file: ""

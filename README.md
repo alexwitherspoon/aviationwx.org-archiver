@@ -7,8 +7,10 @@ Part of the [AviationWX.org](https://github.com/alexwitherspoon/aviationwx) proj
 ## Features
 
 - **Automated archiving** — fetches images from all or selected airports on a configurable schedule
+- **History API mode** — uses AviationWX history API to download all available frames, only missing ones; run every 15 min captures ~15 images per webcam (60s refresh)
 - **Organised storage** — files saved as `archive/YYYY/MM/DD/AIRPORT_CODE/filename`
-- **Single config file** — one YAML file drives the entire system; mount it into the container
+- **Single config file** — one YAML file drives the entire system (stored in named volume)
+- **Environment variable overrides** — configure via `ARCHIVER_*` env vars
 - **Web GUI** — local dashboard for monitoring, configuration, and browsing the archive
 - **Retention policy** — optional automatic cleanup of files older than N days
 - **Minimal dependencies** — Python + Flask + Requests + PyYAML + APScheduler
@@ -26,7 +28,7 @@ docker pull ghcr.io/alexwitherspoon/aviationwx.org-archiver:edge
 docker pull ghcr.io/alexwitherspoon/aviationwx.org-archiver:latest
 ```
 
-Then run with your config and archive volume (see docker-compose.yml).
+Then run with volumes (see Docker section below).
 
 ### Option B: Build from source
 
@@ -35,32 +37,26 @@ Then run with your config and archive volume (see docker-compose.yml).
 git clone https://github.com/alexwitherspoon/aviationwx.org-archiver.git
 cd aviationwx.org-archiver
 
-# 2. Create your config file from the example
-cp config/config.yaml.example config/config.yaml
-# Edit config/config.yaml to set airports and schedule
-
-# 3. Start the container
+# 2. Start the container (archive stored in ./archive, config in named volume)
 docker compose up -d
 
-# 4. Open the web GUI
+# 3. Open the web GUI to configure airports and schedule
 open http://localhost:8080
 ```
+
+On first run, the app uses defaults. Configure via the web GUI (saved to the config volume) or via environment variables (see below).
 
 Or use Make:
 
 ```bash
-make up        # copies example config if needed and starts the container
+make up        # starts the container
 make logs      # tail container logs
 make down      # stop the container
 ```
 
 ## Configuration
 
-All settings live in a single YAML file. Copy the annotated example:
-
-```bash
-cp config/config.yaml.example config/config.yaml
-```
+Config is stored in the `config_data` named volume. On first run, the app uses defaults. Configure via the web GUI (saved to the volume) or via `ARCHIVER_*` environment variables.
 
 Key settings:
 
@@ -70,12 +66,45 @@ Key settings:
 | `archive.retention_days` | `0` | Days to keep files (0 = unlimited) |
 | `schedule.interval_minutes` | `15` | How often to fetch new images |
 | `schedule.fetch_on_start` | `true` | Run an immediate fetch on container start |
+| `schedule.job_timeout_minutes` | `30` | Max minutes per run; next run resumes from where it stopped |
 | `airports.archive_all` | `false` | Archive every airport on AviationWX.org |
 | `airports.selected` | `[KSPB, KAWO]` | Specific airport codes when archive_all is false |
+| `source.use_history_api` | `true` | Use history API to fetch all frames, download only missing; `false` = current image only per run |
+| `source.api_key` | `""` | Partner API key (optional). Enables 500 req/min vs 100/min anonymous. |
+| `source.request_delay_seconds` | `1.2` | Delay before each API request (half of 100/min anonymous; set 0 for Partner keys) |
 | `web.port` | `8080` | Web GUI port |
 | `logging.level` | `INFO` | Log verbosity: DEBUG, INFO, WARNING, ERROR |
 
-The config file can be passed into Docker via a bind mount (see `docker-compose.yml`).
+### Environment variable overrides
+
+Any config setting can be overridden via `ARCHIVER_*` environment variables. Env vars take precedence over the config file.
+
+| Env var | Maps to | Example |
+|---------|---------|---------|
+| `ARCHIVER_ARCHIVE_OUTPUT_DIR` | `archive.output_dir` | `/archive` |
+| `ARCHIVER_ARCHIVE_RETENTION_DAYS` | `archive.retention_days` | `30` |
+| `ARCHIVER_SCHEDULE_INTERVAL_MINUTES` | `schedule.interval_minutes` | `15` |
+| `ARCHIVER_SCHEDULE_FETCH_ON_START` | `schedule.fetch_on_start` | `true` |
+| `ARCHIVER_SOURCE_API_KEY` | `source.api_key` | `your-key` |
+| `ARCHIVER_AIRPORTS_ARCHIVE_ALL` | `airports.archive_all` | `false` |
+| `ARCHIVER_AIRPORTS_SELECTED` | `airports.selected` | `KSPB,KAWO` |
+| `ARCHIVER_LOGGING_LEVEL` | `logging.level` | `INFO` |
+
+Booleans: `true`, `false`, `1`, `0`, `yes`, `no`. Lists: comma- or newline-separated (e.g. `KSPB,KAWO`).
+
+**Example — configure entirely via env vars:**
+
+```bash
+mkdir -p archive
+docker run -d \
+  -p 8080:8080 \
+  -v $(pwd)/archive:/archive \
+  -v config_data:/config \
+  -e ARCHIVER_AIRPORTS_SELECTED=KSPB,KAWO \
+  -e ARCHIVER_SCHEDULE_INTERVAL_MINUTES=15 \
+  -e ARCHIVER_SOURCE_API_KEY=your-partner-key \
+  ghcr.io/alexwitherspoon/aviationwx.org-archiver:latest
+```
 
 ## Archive Layout
 
@@ -86,7 +115,8 @@ archive/
         └── 15/
             ├── KSPB/
             │   ├── 20240615_143000_webcam.jpg
-            │   └── 20240615_150000_webcam.jpg
+            │   ├── 20240615_150000_webcam.jpg
+            │   └── 1718456780_0.jpg   # history mode: {timestamp}_{cam}.jpg
             └── KAWO/
                 └── 20240615_143001_snapshot.webp
 ```
@@ -135,39 +165,26 @@ make build
 make up
 ```
 
-The container runs as a non-root user. Persist data by mounting host directories:
+The container runs as a non-root user. Archive images are stored on the host via a bind mount; config uses a named volume.
 
-| Host path (your choice) | Container path | Purpose |
-|-------------------------|----------------|---------|
-| `./archive` or `/mnt/user/aviationwx/archive` | `/archive` | Archived images (required for persistence) |
-| `./config/config.yaml` | `/config/config.yaml` | Config file (read/write — web GUI saves changes) |
+| Mount | Purpose |
+|-------|---------|
+| `./archive:/archive` | Archived images (host bind mount) |
+| `config_data:/config` | Config file (named volume; web GUI saves changes here) |
 
 **Example with pre-built image:**
 
 ```bash
-# 1. Create config (clone repo or download config.yaml.example)
-mkdir -p config archive
-cp config/config.yaml.example config/config.yaml
-# Edit config/config.yaml to set airports and schedule
+# Create archive directory on host
+mkdir -p archive
 
-# 2. Run with volume mounts — replace /path/on/host with your paths
 docker run -d \
   --name aviationwx-archiver \
   -p 8080:8080 \
-  -v /path/on/host/archive:/archive \
-  -v /path/on/host/config/config.yaml:/config/config.yaml \
-  -e ARCHIVER_CONFIG=/config/config.yaml \
+  -v $(pwd)/archive:/archive \
+  -v config_data:/config \
+  -e ARCHIVER_AIRPORTS_SELECTED=KSPB,KAWO \
   ghcr.io/alexwitherspoon/aviationwx.org-archiver:latest
-```
-
-On Unraid or similar, use your data path (e.g. `/mnt/user/appdata/aviationwx/archive`).
-
-**Docker Compose** (when using the repo):
-
-```yaml
-volumes:
-  - ./archive:/archive
-  - ./config/config.yaml:/config/config.yaml  # read/write so web GUI can save
 ```
 
 ## Requirements
