@@ -37,15 +37,15 @@
   <h2 style="margin:0 0 12px 0">Disk Usage</h2>
   <div style="display:flex; align-items:center; gap:24px; flex-wrap:wrap;">
     <div class="stat" style="text-align:left;">
-      <div class="value">{{ archive_stats.disk_usage.used_gb }} GB</div>
+      <div class="value">{{ archive_stats.disk_usage.used_fmt }} {{ archive_stats.disk_usage.unit }}</div>
       <div class="label">Used</div>
     </div>
     <div class="stat" style="text-align:left;">
-      <div class="value">{{ archive_stats.disk_usage.free_gb }} GB</div>
+      <div class="value">{{ archive_stats.disk_usage.free_fmt }} {{ archive_stats.disk_usage.unit }}</div>
       <div class="label">Available</div>
     </div>
     <div class="stat" style="text-align:left;">
-      <div class="value">{{ archive_stats.disk_usage.total_gb }} GB</div>
+      <div class="value">{{ archive_stats.disk_usage.total_fmt }} {{ archive_stats.disk_usage.unit }}</div>
       <div class="label">Total</div>
     </div>
     <div style="flex:1; min-width:120px;">

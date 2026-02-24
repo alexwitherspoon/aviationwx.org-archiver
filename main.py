@@ -24,8 +24,17 @@ def setup_logging(config: dict) -> None:
 
     log_file = config.get("logging", {}).get("file", "")
     if log_file:
-        os.makedirs(os.path.dirname(log_file), exist_ok=True)
-        handlers.append(logging.FileHandler(log_file))
+        try:
+            log_dir = os.path.dirname(log_file)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            handlers.append(logging.FileHandler(log_file))
+        except OSError as exc:
+            logging.getLogger(__name__).warning(
+                "Could not open log file %s: %s. Logging to stdout only.",
+                log_file,
+                exc,
+            )
 
     logging.basicConfig(
         level=level,

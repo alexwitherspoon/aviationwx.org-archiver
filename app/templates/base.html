@@ -132,7 +132,7 @@
 
     label { display: block; font-size: 13px; margin-bottom: 4px; color: var(--text-muted); }
 
-    input[type="text"], input[type="number"], input[type="url"], select, textarea {
+    input[type="text"], input[type="number"], input[type="url"], input[type="password"], select, textarea {
       width: 100%;
       padding: 8px 12px;
       border-radius: 6px;
@@ -188,10 +188,7 @@
   </main>
 
   <footer>
-    <a href="https://github.com/alexwitherspoon/aviationwx.org-archiver" target="_blank" rel="noopener">AviationWX.org Archiver</a>
-    v{{ app_version }}{% if app_git_sha %} <span title="Git commit">{{ app_git_sha }}</span>{% endif %}
-    &mdash; Part of the <a href="https://aviationwx.org" target="_blank" rel="noopener">AviationWX.org</a> project &mdash;
-    MIT License
+    <a href="https://github.com/alexwitherspoon/aviationwx.org-archiver" target="_blank" rel="noopener">AviationWX.org Archiver</a> v{{ app_version }} &mdash; Part of the <a href="https://aviationwx.org" target="_blank" rel="noopener">AviationWX.org</a> project &mdash; MIT License
   </footer>
 </body>
 </html>

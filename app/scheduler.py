@@ -4,6 +4,7 @@ AviationWX.org Archiver - Background scheduler.
 Runs archive passes on a configurable interval using APScheduler.
 """
 
+import json
 import logging
 import threading
 from datetime import datetime, timezone
@@ -26,15 +27,16 @@ _state = {
     "running": False,  # bool — True while a run is in progress
     "run_count": 0,  # int — total number of completed runs
     "log_entries": [],  # list[dict] — recent log entries for the web GUI
+    "_log_bytes": 0,  # internal: approximate byte size of log_entries
 }
 
-_MAX_LOG_ENTRIES = 200
+_MAX_LOG_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 def get_state() -> dict:
     """Return a copy of the current scheduler state."""
     with _state_lock:
-        return dict(_state)
+        return {k: v for k, v in _state.items() if not k.startswith("_")}
 
 
 def _append_log(message: str, level: str = "INFO") -> None:
@@ -44,9 +46,16 @@ def _append_log(message: str, level: str = "INFO") -> None:
         "message": message,
     }
     with _state_lock:
+        entry_bytes = len(json.dumps(entry))
         _state["log_entries"].append(entry)
-        if len(_state["log_entries"]) > _MAX_LOG_ENTRIES:
-            _state["log_entries"] = _state["log_entries"][-_MAX_LOG_ENTRIES:]
+        _state["_log_bytes"] = _state.get("_log_bytes", 0) + entry_bytes
+
+        while (
+            _state["_log_bytes"] > _MAX_LOG_BYTES
+            and len(_state["log_entries"]) > 1
+        ):
+            removed = _state["log_entries"].pop(0)
+            _state["_log_bytes"] -= len(json.dumps(removed))
 
 
 class _SchedulerLogHandler(logging.Handler):
@@ -55,8 +64,12 @@ class _SchedulerLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             _append_log(self.format(record), record.levelname)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Log to root logger to avoid losing the failure (don't use _append_log
+            # to avoid recursion if that is also failing)
+            logging.getLogger().warning(
+                "Scheduler log handler failed to store entry: %s", exc
+            )
 
 
 def _archive_job(config: dict) -> None:
@@ -74,6 +87,7 @@ def _archive_job(config: dict) -> None:
             return
         _state["running"] = True
 
+    logger.debug("Starting archive job.")
     _append_log("Archive run started.", "INFO")
     try:
         stats = run_archive(config)
@@ -170,5 +184,6 @@ def trigger_run(config: dict) -> bool:
         if _state["running"]:
             logger.debug("Trigger skipped: archive run already in progress.")
             return False
+    logger.debug("Manual archive run triggered.")
     threading.Thread(target=_archive_job, args=[config], daemon=True).start()
     return True
