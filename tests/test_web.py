@@ -569,6 +569,23 @@ def test_serve_archive_file_404_for_path_traversal(flask_client):
         config["archive"]["output_dir"] = orig_dir
 
 
+def test_serve_archive_file_404_for_invalid_subpath(flask_client):
+    """GET /archive rejects invalid subpaths (empty segments, dot segments)."""
+    config = flask_app.config["ARCHIVER_CONFIG"]
+    orig_dir = config["archive"]["output_dir"]
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config["archive"]["output_dir"] = tmpdir
+            flask_app.config["ARCHIVER_CONFIG"] = config
+
+            bad_paths = ["KSPB//2024/image.jpg", "KSPB/./2024/image.jpg"]
+            for bad_path in bad_paths:
+                resp = flask_client.get(f"/archive/{bad_path}")
+                assert resp.status_code == 404, f"Expected 404 for {bad_path!r}"
+    finally:
+        config["archive"]["output_dir"] = orig_dir
+
+
 def test_api_status_includes_version_and_git_sha(flask_client):
     """GET /api/status includes version and git_sha in response."""
     resp = flask_client.get("/api/status")

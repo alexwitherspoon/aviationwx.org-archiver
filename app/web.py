@@ -267,9 +267,27 @@ def configuration():
     )
 
 
+def _is_safe_archive_subpath(subpath: str) -> bool:
+    """
+    Validate subpath to prevent path injection. Reject traversal and absolute paths.
+    """
+    if not subpath or ".." in subpath:
+        return False
+    if subpath.startswith("/") or subpath.startswith("\\"):
+        return False
+    # Reject path components that could escape (e.g. drive letters on Windows)
+    parts = subpath.replace("\\", "/").split("/")
+    for part in parts:
+        if not part or part in (".", ".."):
+            return False
+    return True
+
+
 @app.route("/archive/<path:subpath>")
 def serve_archive_file(subpath: str):
     """Serve a file from the archive directory. Safe against path traversal."""
+    if not _is_safe_archive_subpath(subpath):
+        abort(404)
     config = app.config["ARCHIVER_CONFIG"]
     output_dir = config["archive"]["output_dir"]
     full_path = os.path.normpath(os.path.join(output_dir, subpath))
