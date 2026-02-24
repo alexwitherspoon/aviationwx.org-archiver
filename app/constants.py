@@ -48,6 +48,9 @@ PERCENT_SCALE = 100
 # File hashing
 MD5_READ_CHUNK_SIZE = 65536
 
+# Partial file detection: images smaller than this are considered incomplete
+MIN_IMAGE_SIZE = 256
+
 # Config defaults (used as fallbacks in .get() when key missing)
 DEFAULT_INTERVAL_MINUTES = 15
 DEFAULT_LOG_DISPLAY_COUNT = 100

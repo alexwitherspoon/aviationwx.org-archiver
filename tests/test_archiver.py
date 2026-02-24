@@ -788,6 +788,54 @@ def test_download_image_returns_none_after_all_retries_fail():
     assert result is None
 
 
+def test_download_image_returns_none_on_404_fail_fast():
+    """download_image returns None on 404 without retrying (image aged out)."""
+    from app.archiver import download_image
+
+    config = {
+        "source": {
+            "request_timeout": 5,
+            "max_retries": 3,
+            "retry_delay": 1,
+        },
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 404
+
+    with patch("app.archiver.requests.get", return_value=mock_resp) as mock_get:
+        result = download_image("https://example.com/old_image.jpg", config)
+
+    assert result is None
+    mock_get.assert_called_once()
+
+
+def test_download_image_to_file_returns_false_on_404_fail_fast():
+    """download_image_to_file returns False on 404 without retrying (image aged out)."""
+    from app.archiver import download_image_to_file
+
+    config = {
+        "source": {
+            "request_timeout": 5,
+            "max_retries": 3,
+            "retry_delay": 1,
+        },
+    }
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 404
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        filepath = os.path.join(tmpdir, "test.jpg")
+        with patch("app.archiver.requests.get", return_value=mock_resp) as mock_get:
+            result = download_image_to_file(
+                "https://example.com/old_image.jpg", filepath, config
+            )
+
+    assert result is False
+    mock_get.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # save_image tests
 # ---------------------------------------------------------------------------
@@ -1649,12 +1697,14 @@ def test_get_existing_frames_finds_history_files():
         path1 = os.path.join(tmpdir, "KSPB", "2024", "01", "15", "cam_1")
         os.makedirs(path0, exist_ok=True)
         os.makedirs(path1, exist_ok=True)
+        # Files must be >= MIN_IMAGE_SIZE to count as existing (not partial)
+        chunk = b"x" * 256
         with open(os.path.join(path0, "1700000000_0.jpg"), "wb") as f:
-            f.write(b"x")
+            f.write(chunk)
         with open(os.path.join(path0, "1700000060_0.jpg"), "wb") as f:
-            f.write(b"x")
+            f.write(chunk)
         with open(os.path.join(path1, "1700000120_1.jpg"), "wb") as f:
-            f.write(b"x")
+            f.write(chunk)
 
         existing = _get_existing_frames(tmpdir, "KSPB")
         assert (1700000000, 0) in existing
@@ -1977,17 +2027,18 @@ def test_run_archive_warns_when_fetched_but_none_saved():
             return resp
 
         with patch("app.archiver.requests.get", side_effect=mock_get):
-            with patch("app.archiver.save_image", return_value=None):
+            with patch("app.archiver.save_image_from_url", return_value=None):
                 with patch("app.archiver.logger") as mock_logger:
                     stats = run_archive(config)
 
-        assert stats["images_fetched"] == 1
-        assert stats["images_saved"] == 0
-        mock_logger.warning.assert_called()
-        assert any(
-            "fetched but none saved" in str(c).lower() or "output_dir" in str(c).lower()
-            for c in mock_logger.warning.call_args_list
-        )
+                    assert stats["images_fetched"] == 1
+                    assert stats["images_saved"] == 0
+                    mock_logger.warning.assert_called()
+                    assert any(
+                        "fetched but none saved" in str(c).lower()
+                        or "output_dir" in str(c).lower()
+                        for c in mock_logger.warning.call_args_list
+                    )
 
 
 # ---------------------------------------------------------------------------

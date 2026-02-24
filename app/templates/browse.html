@@ -8,8 +8,12 @@
 <style>
   .file-link { color: var(--accent); text-decoration: none; }
   .file-link:hover { text-decoration: underline; }
+  #preview-nav button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
 </style>
-<div id="preview-panel" class="card" style="display:none; margin-bottom:24px;">
+<div id="preview-panel" class="card" style="display:none; margin-bottom:24px;" tabindex="-1">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
     <div>
       <h2 style="margin-bottom:4px;">Preview</h2>
@@ -17,10 +21,10 @@
     </div>
     <a id="preview-download-btn" href="" download="" class="btn primary" style="display:inline-block; padding:8px 16px; text-decoration:none; border-radius:6px; font-size:13px; font-weight:500;">Download</a>
   </div>
-  <div id="preview-nav" style="display:none; margin-bottom:12px; flex-wrap:wrap; align-items:center; justify-content:center; gap:12px;">
-    <button id="prev-btn" type="button" class="btn" title="Previous image (←)">← Previous</button>
-    <span id="preview-position" style="color:var(--text-muted); font-size:13px;"></span>
-    <button id="next-btn" type="button" class="btn" title="Next image (→)">Next →</button>
+  <div id="preview-nav" style="display:none; margin-bottom:12px; padding:12px; background:var(--bg); border-radius:6px; border:1px solid var(--border); flex-wrap:wrap; align-items:center; justify-content:center; gap:16px;">
+    <button id="prev-btn" type="button" class="btn primary" title="Previous image (←)">← Previous</button>
+    <span id="preview-position" style="color:var(--text-muted); font-size:13px; min-width:60px; text-align:center;"></span>
+    <button id="next-btn" type="button" class="btn primary" title="Next image (→)">Next →</button>
   </div>
   <div id="preview-content" style="max-width:100%; overflow:auto;">
     <img id="preview-image" src="" alt="Preview" style="max-width:100%; max-height:70vh; display:block; border-radius:4px;">
@@ -149,7 +153,7 @@
   }
 
   function updateNav() {
-    if (siblings.length <= 1) {
+    if (siblings.length === 0) {
       navEl.style.display = 'none';
       return;
     }
@@ -169,7 +173,8 @@
   }
 
   function handleKeydown(e) {
-    if (!panel || panel.style.display !== 'block' || siblings.length <= 1) return;
+    if (!panel || getComputedStyle(panel).display === 'none') return;
+    if (siblings.length <= 1) return;
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if (e.key === 'ArrowLeft') {
       e.preventDefault();
@@ -214,6 +219,7 @@
         navEl.style.display = 'none';
       }
 
+      panel.focus();
       panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   });

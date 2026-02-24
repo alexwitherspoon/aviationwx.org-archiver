@@ -7,10 +7,12 @@ Fetches webcam images from AviationWX.org and organises them on disk as:
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
@@ -22,6 +24,7 @@ from app.constants import (
     BYTES_PER_GIB,
     DEFAULT_REQUEST_DELAY_SECONDS,
     MD5_READ_CHUNK_SIZE,
+    MIN_IMAGE_SIZE,
     SECONDS_PER_DAY,
     SECONDS_PER_MINUTE,
 )
@@ -597,8 +600,12 @@ def _get_existing_frames(output_dir: str, airport_code: str) -> set[tuple[int, i
             try:
                 ts = int(base[:underscore])
                 cam = int(base[underscore + 1 :])
+                fpath = os.path.join(root, fname)
+                if os.path.getsize(fpath) < MIN_IMAGE_SIZE:
+                    _delete_partial_file(fpath)
+                    continue
                 existing.add((ts, cam))
-            except ValueError:
+            except (ValueError, OSError):
                 continue
     logger.debug("Found %d existing frames for %s", len(existing), airport_code)
     return existing
@@ -673,6 +680,258 @@ def _absolute_url(url: str, base_url: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _delete_partial_file(filepath: str) -> None:
+    """Remove partial file so another run can retry. Best-effort."""
+    try:
+        if os.path.isfile(filepath):
+            os.unlink(filepath)
+            logger.debug("Removed partial file %s for retry", filepath)
+    except OSError as exc:
+        logger.warning("Could not remove partial file %s: %s", filepath, exc)
+
+
+def _parse_content_digest(
+    headers: requests.structures.CaseInsensitiveDict,
+) -> tuple[str, bytes] | None:
+    """
+    Parse Content-Digest (RFC 9530) header.
+
+    Returns (algorithm, digest_bytes) for first supported algo, or None.
+    Prefers sha-256 > sha-512 > md5.
+    """
+    raw = headers.get("Content-Digest") or headers.get("content-digest")
+    if not raw:
+        return None
+    # Format: sha-256=:base64:, sha-512=:base64:, md5=:base64:
+    for algo in ("sha-256", "sha-512", "md5"):
+        match = re.search(rf"{re.escape(algo)}\s*=\s*:([A-Za-z0-9+/=]+):", raw)
+        if match:
+            try:
+                digest = base64.b64decode(match.group(1))
+                if digest:
+                    return (algo, digest)
+            except (ValueError, TypeError):
+                continue
+    return None
+
+
+def _parse_content_md5(
+    headers: requests.structures.CaseInsensitiveDict,
+) -> bytes | None:
+    """Parse Content-MD5 header (RFC 1864). Returns digest bytes or None."""
+    raw = headers.get("Content-MD5") or headers.get("content-md5")
+    if not raw:
+        return None
+    try:
+        digest = base64.b64decode(raw.strip())
+        return digest if len(digest) == 16 else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_etag_as_md5(
+    headers: requests.structures.CaseInsensitiveDict,
+) -> bytes | None:
+    """
+    Parse ETag header as MD5 hex if it looks like 32 hex chars.
+
+    Some servers (e.g. S3) use MD5 hex as ETag. Returns digest bytes or None.
+    """
+    raw = headers.get("ETag") or headers.get("etag")
+    if not raw:
+        return None
+    etag = raw.strip().strip('"')
+    if len(etag) == 32 and re.match(r"^[0-9a-fA-F]{32}$", etag):
+        try:
+            return bytes.fromhex(etag)
+        except ValueError:
+            pass
+    return None
+
+
+def _parse_content_range_total(
+    headers: requests.structures.CaseInsensitiveDict,
+) -> int | None:
+    """
+    Parse Content-Range header for total size (206 responses).
+
+    Format: bytes start-end/total. Returns total or None if absent/unknown.
+    """
+    raw = headers.get("Content-Range") or headers.get("content-range")
+    if not raw:
+        return None
+    match = re.search(r"bytes\s+\d+-\d+/(\d+)", raw, re.IGNORECASE)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+    return None
+
+
+def _verify_file_integrity(
+    filepath: str,
+    expected_algo: str,
+    expected_digest: bytes,
+) -> bool:
+    """Compute file hash and compare with expected digest. Returns True if match."""
+    try:
+        h = hashlib.new(expected_algo)
+        with open(filepath, "rb") as fh:
+            for chunk in iter(lambda: fh.read(MD5_READ_CHUNK_SIZE), b""):
+                h.update(chunk)
+        return h.digest() == expected_digest
+    except (OSError, ValueError):
+        return False
+
+
+def _get_integrity_check(resp: requests.Response) -> tuple[str, bytes] | None:
+    """
+    Extract integrity check from response headers.
+
+    Prefers Content-Digest (RFC 9530), then Content-MD5, then ETag (if MD5-shaped).
+    Returns (algo, digest) or None when no integrity headers present (fallback: skip).
+    """
+    headers = resp.headers
+    parsed = _parse_content_digest(headers)
+    if parsed:
+        return parsed
+    md5_digest = _parse_content_md5(headers) or _parse_etag_as_md5(headers)
+    if md5_digest:
+        return ("md5", md5_digest)
+    return None
+
+
+def download_image_to_file(url: str, filepath: str, config: dict) -> bool:
+    """
+    Download an image to filepath with resume support.
+
+    If a partial file exists, tries Range request to resume. If resume fails
+    or download is interrupted, deletes the partial file so another run can retry.
+    Returns True on success, False on failure.
+    """
+    timeout = config["source"]["request_timeout"]
+    retries = config["source"]["max_retries"]
+    delay = config["source"]["retry_delay"]
+    headers = _api_headers(config)
+
+    existing_size = 0
+    if os.path.isfile(filepath):
+        existing_size = os.path.getsize(filepath)
+        if existing_size < MIN_IMAGE_SIZE:
+            _delete_partial_file(filepath)
+            existing_size = 0
+
+    for attempt in range(1, retries + 1):
+        _rate_limit(config)
+        try:
+            range_headers = {}
+            if existing_size > 0:
+                range_headers["Range"] = f"bytes={existing_size}-"
+
+            resp = requests.get(
+                url,
+                timeout=timeout,
+                stream=True,
+                headers={**headers, **range_headers},
+            )
+
+            # 404/410: image aged out or removed; fail fast, no retry
+            if resp.status_code in (404, 410):
+                logger.debug(
+                    "Image no longer available (%s): %s",
+                    resp.status_code,
+                    url,
+                )
+                _delete_partial_file(filepath)
+                return False
+
+            resp.raise_for_status()
+
+            content_type = resp.headers.get("content-type", "")
+            if not content_type.startswith("image/"):
+                logger.debug(
+                    "Skipping non-image URL %s (content-type: %s)",
+                    url,
+                    content_type,
+                )
+                return False
+
+            mode = "ab" if existing_size > 0 and resp.status_code == 206 else "wb"
+            if mode == "wb" and existing_size > 0:
+                _delete_partial_file(filepath)
+                existing_size = 0
+                mode = "wb"
+
+            with open(filepath, mode) as fh:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        fh.write(chunk)
+
+            size = os.path.getsize(filepath)
+
+            # Verify completeness using server-provided integrity info
+            if resp.status_code == 206:
+                total = _parse_content_range_total(resp.headers)
+                if total is None:
+                    logger.debug(
+                        "No Content-Range total for resume %s; skipping size check",
+                        url,
+                    )
+                elif size != total:
+                    logger.warning(
+                        "Incomplete resume: %s has %d bytes, expected %d",
+                        filepath,
+                        size,
+                        total,
+                    )
+                    _delete_partial_file(filepath)
+                    existing_size = 0
+                    raise requests.RequestException(
+                        f"Incomplete resume: got {size} bytes, expected {total}"
+                    )
+            else:
+                integrity = _get_integrity_check(resp)
+                if integrity:
+                    algo, expected = integrity
+                    if not _verify_file_integrity(filepath, algo, expected):
+                        logger.warning(
+                            "Integrity check failed for %s (%s mismatch)",
+                            filepath,
+                            algo,
+                        )
+                        _delete_partial_file(filepath)
+                        existing_size = 0
+                        raise requests.RequestException(
+                            f"Integrity check failed ({algo} mismatch)"
+                        )
+                else:
+                    logger.debug(
+                        "No integrity headers for %s; skipping verification",
+                        url,
+                    )
+
+            logger.debug("Downloaded to %s (%d bytes)", filepath, size)
+            return True
+
+        except requests.RequestException as exc:
+            logger.warning(
+                "Attempt %d/%d: failed to download %s: %s",
+                attempt,
+                retries,
+                url,
+                exc,
+            )
+            _delete_partial_file(filepath)
+            existing_size = 0
+            if attempt < retries:
+                time.sleep(delay)
+
+    logger.error("All %d attempts to download %s failed.", retries, url)
+    _delete_partial_file(filepath)
+    return False
+
+
 def download_image(url: str, config: dict) -> bytes | None:
     """
     Download an image from ``url``.
@@ -690,6 +949,16 @@ def download_image(url: str, config: dict) -> bytes | None:
             resp = requests.get(
                 url, timeout=timeout, stream=True, headers=_api_headers(config)
             )
+
+            # 404/410: image aged out or removed; fail fast, no retry
+            if resp.status_code in (404, 410):
+                logger.debug(
+                    "Image no longer available (%s): %s",
+                    resp.status_code,
+                    url,
+                )
+                return None
+
             resp.raise_for_status()
             content_type = resp.headers.get("content-type", "")
             if not content_type.startswith("image/"):
@@ -714,6 +983,60 @@ def download_image(url: str, config: dict) -> bytes | None:
 
     logger.error("All %d attempts to download %s failed.", retries, url)
     return None
+
+
+def save_history_image_from_url(
+    url: str,
+    airport_code: str,
+    cam_index: int,
+    frame_ts: int,
+    config: dict,
+    camera_name: str | None = None,
+) -> str | None:
+    """
+    Download and save a history API frame via URL with resume support.
+
+    Uses download_image_to_file for resume on interrupt; deletes partial on failure.
+    """
+    output_dir = config["archive"]["output_dir"]
+    cam_safe = _sanitize_camera_name(camera_name or "", fallback=f"cam_{cam_index}")
+    dt = datetime.fromtimestamp(frame_ts, tz=timezone.utc)
+    date_path = os.path.join(
+        output_dir,
+        airport_code.upper(),
+        dt.strftime("%Y"),
+        dt.strftime("%m"),
+        dt.strftime("%d"),
+        cam_safe,
+    )
+
+    try:
+        os.makedirs(date_path, exist_ok=True)
+    except OSError as exc:
+        logger.error("Failed to create directory %s: %s", date_path, exc)
+        return None
+
+    filename = f"{frame_ts}_{cam_index}.jpg"
+    filepath = os.path.join(date_path, filename)
+
+    if not download_image_to_file(url, filepath, config):
+        return None
+
+    try:
+        os.chmod(filepath, 0o644)
+        os.utime(filepath, (frame_ts, frame_ts))
+        logger.info(
+            "Archived history frame %s cam %s @ %s -> %s",
+            airport_code,
+            cam_index,
+            frame_ts,
+            filepath,
+        )
+        return filepath
+    except OSError as exc:
+        logger.error("Failed to set permissions on %s: %s", filepath, exc)
+        _delete_partial_file(filepath)
+        return None
 
 
 def save_history_image(
@@ -774,6 +1097,57 @@ def save_history_image(
         return filepath
     except OSError as exc:
         logger.error("Failed to write image to %s: %s", filepath, exc)
+        return None
+
+
+def save_image_from_url(
+    url: str,
+    airport_code: str,
+    config: dict,
+    timestamp: datetime | None = None,
+    camera_name: str | None = None,
+) -> str | None:
+    """
+    Download and save an image via URL with resume support.
+
+    Uses download_image_to_file for resume on interrupt; deletes partial on failure.
+    """
+    if timestamp is None:
+        timestamp = datetime.now(timezone.utc)
+
+    output_dir = config["archive"]["output_dir"]
+    cam_safe = _sanitize_camera_name(camera_name or "", fallback="current")
+    date_path = os.path.join(
+        output_dir,
+        airport_code.upper(),
+        timestamp.strftime("%Y"),
+        timestamp.strftime("%m"),
+        timestamp.strftime("%d"),
+        cam_safe,
+    )
+
+    try:
+        os.makedirs(date_path, exist_ok=True)
+    except OSError as exc:
+        logger.error("Failed to create directory %s: %s", date_path, exc)
+        return None
+
+    url_basename = os.path.basename(urlparse(url).path) or "image"
+    ts_prefix = timestamp.strftime("%Y%m%d_%H%M%S")
+    filename = f"{ts_prefix}_{url_basename}"
+    filepath = os.path.join(date_path, filename)
+
+    if not download_image_to_file(url, filepath, config):
+        return None
+
+    try:
+        os.chmod(filepath, 0o644)
+        os.utime(filepath, (timestamp.timestamp(), timestamp.timestamp()))
+        logger.info("Archived %s -> %s", url, filepath)
+        return filepath
+    except OSError as exc:
+        logger.error("Failed to set permissions on %s: %s", filepath, exc)
+        _delete_partial_file(filepath)
         return None
 
 
@@ -1057,11 +1431,8 @@ def _run_archive_round_robin(
 
             if frame is not None:
                 stats["images_fetched"] += 1
-                image_data = download_image(frame["url"], config)
-                if image_data is None:
-                    continue
-                saved = save_history_image(
-                    image_data,
+                saved = save_history_image_from_url(
+                    frame["url"],
                     code,
                     cam_index,
                     frame["timestamp"],
@@ -1074,18 +1445,15 @@ def _run_archive_round_robin(
                 url = _webcam_to_image_url(webcam, config)
                 if url:
                     stats["images_fetched"] += 1
-                    image_data = download_image(url, config)
-                    if image_data is not None:
-                        saved = save_image(
-                            image_data,
-                            url,
-                            code,
-                            config,
-                            timestamp=run_ts,
-                            camera_name=cam_name,
-                        )
-                        if saved:
-                            stats["images_saved"] += 1
+                    saved = save_image_from_url(
+                        url,
+                        code,
+                        config,
+                        timestamp=run_ts,
+                        camera_name=cam_name,
+                    )
+                    if saved:
+                        stats["images_saved"] += 1
             progress = True
         if not progress:
             break
@@ -1141,12 +1509,9 @@ def _run_archive_history(
                     continue
 
                 stats["images_fetched"] += 1
-                image_data = download_image(frame["url"], config)
-                if image_data is None:
-                    continue
                 cam_name = webcam.get("name")
-                saved = save_history_image(
-                    image_data, code, cam_index, ts, config, camera_name=cam_name
+                saved = save_history_image_from_url(
+                    frame["url"], code, cam_index, ts, config, camera_name=cam_name
                 )
                 if saved:
                     stats["images_saved"] += 1
@@ -1161,19 +1526,16 @@ def _run_archive_history(
                 )
             elif url:
                 stats["images_fetched"] += 1
-                image_data = download_image(url, config)
-                if image_data is not None:
-                    cam_name = webcam.get("name")
-                    saved = save_image(
-                        image_data,
-                        url,
-                        code,
-                        config,
-                        timestamp=run_ts,
-                        camera_name=cam_name,
-                    )
-                    if saved:
-                        stats["images_saved"] += 1
+                cam_name = webcam.get("name")
+                saved = save_image_from_url(
+                    url,
+                    code,
+                    config,
+                    timestamp=run_ts,
+                    camera_name=cam_name,
+                )
+                if saved:
+                    stats["images_saved"] += 1
     return False
 
 
@@ -1194,12 +1556,9 @@ def _run_archive_current_only(
             if not url:
                 continue
             stats["images_fetched"] += 1
-            image_data = download_image(url, config)
-            if image_data is None:
-                continue
             cam_name = webcam.get("name")
-            saved = save_image(
-                image_data, url, code, config, timestamp=run_ts, camera_name=cam_name
+            saved = save_image_from_url(
+                url, code, config, timestamp=run_ts, camera_name=cam_name
             )
             if saved:
                 stats["images_saved"] += 1
@@ -1209,10 +1568,7 @@ def _run_archive_current_only(
             logger.debug("No image URLs for %s (current-only mode)", code)
         for url in image_urls:
             stats["images_fetched"] += 1
-            image_data = download_image(url, config)
-            if image_data is None:
-                continue
-            saved = save_image(image_data, url, code, config, timestamp=run_ts)
+            saved = save_image_from_url(url, code, config, timestamp=run_ts)
             if saved:
                 stats["images_saved"] += 1
 
