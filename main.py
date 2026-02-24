@@ -10,7 +10,7 @@ import logging
 import os
 import sys
 
-from app.config import load_config
+from app.config import check_host_resources, load_config
 from app.scheduler import start_scheduler
 from app.web import app
 
@@ -40,6 +40,8 @@ def main() -> None:
 
     logger = logging.getLogger(__name__)
     logger.info("AviationWX.org Archiver starting up.")
+
+    check_host_resources(config)
 
     # Scheduler uses getter so web UI config changes take effect on next run
     app.config["ARCHIVER_CONFIG"] = config
