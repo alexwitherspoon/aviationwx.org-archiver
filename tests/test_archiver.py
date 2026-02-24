@@ -28,6 +28,7 @@ def test_load_config_defaults_when_file_missing():
         == DEFAULT_CONFIG["schedule"]["interval_minutes"]
     )
     assert config["web"]["port"] == DEFAULT_CONFIG["web"]["port"]
+    assert config["web"].get("priority_yield_seconds", 0) > 0
 
 
 def test_load_config_reads_yaml_file():
@@ -111,6 +112,36 @@ def test_load_config_invalid_yaml():
         assert config["web"]["port"] == DEFAULT_CONFIG["web"]["port"]
     finally:
         os.unlink(tmp_path)
+
+
+def test_yield_for_web_disabled_when_web_off():
+    """_yield_for_web does nothing when web.enabled is False."""
+    from app.archiver import _yield_for_web
+
+    config = {"web": {"enabled": False, "priority_yield_seconds": 0.02}}
+    with patch("app.archiver.time.sleep") as mock_sleep:
+        _yield_for_web(config)
+    mock_sleep.assert_not_called()
+
+
+def test_yield_for_web_disabled_when_yield_zero():
+    """_yield_for_web does nothing when priority_yield_seconds is 0."""
+    from app.archiver import _yield_for_web
+
+    config = {"web": {"enabled": True, "priority_yield_seconds": 0}}
+    with patch("app.archiver.time.sleep") as mock_sleep:
+        _yield_for_web(config)
+    mock_sleep.assert_not_called()
+
+
+def test_yield_for_web_sleeps_when_enabled():
+    """_yield_for_web sleeps when web enabled and yield > 0."""
+    from app.archiver import _yield_for_web
+
+    config = {"web": {"enabled": True, "priority_yield_seconds": 0.02}}
+    with patch("app.archiver.time.sleep") as mock_sleep:
+        _yield_for_web(config)
+    mock_sleep.assert_called_once_with(0.02)
 
 
 def test_validate_config_requires_airports():

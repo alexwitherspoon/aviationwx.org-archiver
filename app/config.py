@@ -49,6 +49,9 @@ DEFAULT_CONFIG = {
         "port": 8080,
         "host": "0.0.0.0",
         "log_display_count": DEFAULT_LOG_DISPLAY_COUNT,
+        # When > 0 and web enabled: archive worker yields this many seconds at
+        # strategic points so the web UI gets CPU time. 0 = disabled.
+        "priority_yield_seconds": 0.02,
     },
     "logging": {
         "level": "INFO",
@@ -85,6 +88,7 @@ _ENV_TO_CONFIG: list[tuple[str, tuple[str, ...], str | type]] = [
     ("ARCHIVER_WEB_PORT", ("web", "port"), int),
     ("ARCHIVER_WEB_HOST", ("web", "host"), str),
     ("ARCHIVER_WEB_LOG_DISPLAY_COUNT", ("web", "log_display_count"), int),
+    ("ARCHIVER_WEB_PRIORITY_YIELD_SECONDS", ("web", "priority_yield_seconds"), "float"),
     ("ARCHIVER_LOGGING_LEVEL", ("logging", "level"), str),
     ("ARCHIVER_LOGGING_FILE", ("logging", "file"), str),
 ]

@@ -84,6 +84,10 @@ web:
   # Log entries shown on dashboard
   log_display_count: 100
 
+  # When > 0: archive worker yields this many seconds at strategic points so
+  # the web UI stays responsive during runs. 0 = disabled. Default 0.02.
+  # priority_yield_seconds: 0.02
+
 # ============================================================
 # Logging
 # ============================================================

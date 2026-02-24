@@ -32,6 +32,22 @@ from app.constants import (
 logger = logging.getLogger(__name__)
 
 
+def _yield_for_web(config: dict) -> None:
+    """
+    Yield CPU to other threads when web UI is enabled.
+
+    When web.enabled and web.priority_yield_seconds > 0, sleeps briefly so the
+    web thread gets scheduled. Helps keep the admin panel responsive during
+    archive runs.
+    """
+    web = config.get("web") or {}
+    if not web.get("enabled", True):
+        return
+    sec = web.get("priority_yield_seconds", 0)
+    if sec > 0:
+        time.sleep(sec)
+
+
 def _sanitize_camera_name(name: str, fallback: str = "unknown") -> str:
     """
     Make camera name safe for Linux filesystem: lowercase, no spaces.
@@ -1463,6 +1479,7 @@ def _run_archive_round_robin(
             progress = True
         if not progress:
             break
+        _yield_for_web(config)
 
 
 def _run_archive_history(
@@ -1542,6 +1559,7 @@ def _run_archive_history(
                 )
                 if saved:
                     stats["images_saved"] += 1
+        _yield_for_web(config)
     return False
 
 
@@ -1568,6 +1586,7 @@ def _run_archive_current_only(
             )
             if saved:
                 stats["images_saved"] += 1
+            _yield_for_web(config)
     else:
         image_urls = fetch_image_urls(airport, config)
         if not image_urls:
@@ -1715,6 +1734,7 @@ def run_archive(
             except Exception as exc:
                 logger.error("Error archiving images for %s: %s", code, exc)
                 stats["errors"] += 1
+            _yield_for_web(config)
 
     apply_retention(config)
     logger.info(

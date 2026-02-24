@@ -76,6 +76,7 @@ Key settings:
 | `source.request_delay_seconds` | `1.2` | Fallback delay when rate-limit probe fails; otherwise auto-detected from API (50% of limit) |
 | `web.enabled` | `true` | Set to `false` in secure environments to run scheduler only (no web UI) |
 | `web.port` | `8080` | Web GUI port |
+| `web.priority_yield_seconds` | `0.02` | When > 0 and web enabled: archive worker yields at strategic points so the web UI stays responsive. Set to `0` to disable. |
 | `logging.level` | `INFO` | Log verbosity: DEBUG, INFO, WARNING, ERROR |
 
 ### Environment variable overrides
@@ -93,6 +94,7 @@ Any config setting can be overridden via `ARCHIVER_*` environment variables. Env
 | `ARCHIVER_AIRPORTS_ARCHIVE_ALL` | `airports.archive_all` | `false` |
 | `ARCHIVER_AIRPORTS_SELECTED` | `airports.selected` | `KSPB,KAWO` |
 | `ARCHIVER_WEB_ENABLED` | `web.enabled` | `true` |
+| `ARCHIVER_WEB_PRIORITY_YIELD_SECONDS` | `web.priority_yield_seconds` | `0.02` |
 | `ARCHIVER_LOGGING_LEVEL` | `logging.level` | `INFO` |
 
 Booleans: `true`, `false`, `1`, `0`, `yes`, `no`. Lists: comma- or newline-separated (e.g. `KSPB,KAWO`).
