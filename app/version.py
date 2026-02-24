@@ -36,7 +36,7 @@ def _get_version() -> str:
                     return data.get("project", {}).get("version", "0.0.0")
     except Exception:
         pass
-    return "0.2.0"
+    return "0.3.0"
 
 
 def _get_git_sha() -> str:
