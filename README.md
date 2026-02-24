@@ -140,8 +140,8 @@ The local web interface (default `http://localhost:8080`) provides:
 # Install dependencies (Python 3.12+)
 pip install -r requirements.txt -r requirements-dev.txt
 
-# Run tests
-make test
+# Run tests (test-ci = lint + format check + tests, matches CI)
+make test-ci   # or: make test for tests only
 
 # Run locally without Docker
 make dev
