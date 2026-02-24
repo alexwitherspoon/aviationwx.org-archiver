@@ -28,12 +28,21 @@ from app.constants import (
 logger = logging.getLogger(__name__)
 
 
+# Browser-like User-Agent to avoid Cloudflare blocks.
+# Python requests default is often blocked by WAF.
+_USER_AGENT = (
+    "Mozilla/5.0 (compatible; AviationWX-Archiver/1.0; "
+    "+https://github.com/alexwitherspoon/aviationwx.org-archiver)"
+)
+
+
 def _api_headers(config: dict) -> dict:
     """Return headers for API requests, including X-API-Key if configured."""
+    headers = {"User-Agent": _USER_AGENT}
     api_key = (config.get("source", {}).get("api_key") or "").strip()
     if api_key:
-        return {"X-API-Key": api_key}
-    return {}
+        headers["X-API-Key"] = api_key
+    return headers
 
 
 def _rate_limit(config: dict) -> None:
@@ -66,6 +75,7 @@ def fetch_airport_list(config: dict) -> list[dict]:
     timeout = config["source"]["request_timeout"]
     retries = config["source"]["max_retries"]
     delay = config["source"]["retry_delay"]
+    logger.debug("Fetching airport list from %s", url)
 
     for attempt in range(1, retries + 1):
         _rate_limit(config)
@@ -205,6 +215,7 @@ def fetch_image_urls(airport: dict, config: dict) -> list[str]:
 
     # 2. Fall back: fetch the airport page and look for image tags
     page_url = f"{base_url.rstrip('/')}/?airport={code.lower()}"
+    logger.debug("Fetching airport page %s (fallback)", page_url)
     try:
         _rate_limit(config)
         resp = requests.get(page_url, timeout=timeout, headers=_api_headers(config))
@@ -258,7 +269,7 @@ def _webcam_to_image_url(webcam: dict, config: dict) -> str | None:
         val = webcam.get(key)
         if val and isinstance(val, str):
             base = api_base + "/"
-            return val if val.startswith("http") else urljoin(base, val.lstrip("/"))
+            return val if val.startswith("http") else urljoin(base, val)
     return None
 
 
@@ -273,6 +284,7 @@ def _fetch_webcams_list(airport: dict, config: dict) -> list[dict]:
     api_base = api_url.rstrip("/").rsplit("/airports", 1)[0]
     webcam_api = f"{api_base}/airports/{code}/webcams"
     timeout = config["source"]["request_timeout"]
+    logger.debug("Fetching webcams list from %s", webcam_api)
 
     try:
         _rate_limit(config)
@@ -297,6 +309,7 @@ def _fetch_webcams_list(airport: dict, config: dict) -> list[dict]:
         if not webcams:
             logger.debug("Webcams API returned empty list for %s", code)
             return []
+        logger.debug("Webcams API returned %d webcam(s) for %s", len(webcams), code)
         return webcams
     except requests.RequestException as exc:
         logger.debug("Webcams API request failed for %s: %s", code, exc)
@@ -328,9 +341,10 @@ def fetch_history_frames(airport_code: str, webcam: dict, config: dict) -> list[
     api_url = config["source"]["airports_api_url"]
     api_base = api_url.rstrip("/").rsplit("/airports", 1)[0]
     if not history_url.startswith("http"):
-        full_url = urljoin(api_base + "/", history_url.lstrip("/"))
+        full_url = urljoin(api_base + "/", history_url)
     else:
         full_url = history_url
+    logger.debug("Fetching history from %s", full_url)
 
     timeout = config["source"]["request_timeout"]
     try:
@@ -361,6 +375,12 @@ def fetch_history_frames(airport_code: str, webcam: dict, config: dict) -> list[
             )
             return []
 
+        logger.debug(
+            "History API returned %d frame(s) for %s cam %s",
+            len(frames),
+            airport_code,
+            cam_index,
+        )
         result = []
         for f in frames:
             ts = f.get("timestamp")
@@ -368,7 +388,7 @@ def fetch_history_frames(airport_code: str, webcam: dict, config: dict) -> list[
             if ts is None or not url:
                 continue
             if not url.startswith("http"):
-                url = urljoin(api_base + "/", url.lstrip("/"))
+                url = urljoin(api_base + "/", url)
             result.append(
                 {
                     "url": url,
@@ -505,6 +525,7 @@ def download_image(url: str, config: dict) -> bytes | None:
     retries = config["source"]["max_retries"]
     delay = config["source"]["retry_delay"]
 
+    logger.debug("Downloading image from %s", url)
     for attempt in range(1, retries + 1):
         _rate_limit(config)
         try:

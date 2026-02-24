@@ -69,8 +69,16 @@ class _SchedulerLogHandler(logging.Handler):
             )
 
 
+def _apply_log_level(config: dict) -> None:
+    """Apply logging level from config (so web UI changes take effect on next run)."""
+    level_str = config.get("logging", {}).get("level", "INFO").upper()
+    level = getattr(logging, level_str, logging.INFO)
+    logging.getLogger().setLevel(level)
+
+
 def _archive_job(config: dict) -> None:
     """Scheduled job: run one archive pass and update shared state."""
+    _apply_log_level(config)
     errors = validate_config(config)
     if errors:
         for err in errors:

@@ -480,7 +480,69 @@ def test_fetch_image_urls_webcam_api_url_no_double_v1():
         assert "/v1/v1/" not in call_url
         assert call_url == "https://api.aviationwx.org/v1/airports/kspb/webcams"
         assert len(urls) == 1
-        assert "api.aviationwx.org" in urls[0]
+        assert urls[0] == "https://api.aviationwx.org/v1/airports/kspb/webcams/0/image"
+
+
+def test_webcam_to_image_url_forms_correct_url_without_double_v1():
+    """_webcam_to_image_url must not produce duplicate /v1/ in path."""
+    from app.archiver import _webcam_to_image_url
+
+    config = {"source": {"airports_api_url": "https://api.aviationwx.org/v1/airports"}}
+    webcam = {"index": 0, "image_url": "/v1/airports/kspb/webcams/0/image"}
+    url = _webcam_to_image_url(webcam, config)
+    assert url == "https://api.aviationwx.org/v1/airports/kspb/webcams/0/image"
+    assert "/v1/v1/" not in url
+
+
+def test_absolute_url_path_absolute_no_double_segment():
+    """_absolute_url must not duplicate path when url starts with /."""
+    from app.archiver import _absolute_url
+
+    base = "https://api.aviationwx.org/v1"
+    url = _absolute_url("/v1/airports/kspb/webcams/0/image", base)
+    assert url == "https://api.aviationwx.org/v1/airports/kspb/webcams/0/image"
+    assert "/v1/v1/" not in url
+
+
+def test_fetch_history_frames_forms_correct_url():
+    """fetch_history_frames builds history URL without duplicate /v1/."""
+    from app.archiver import fetch_history_frames
+
+    config = {
+        "source": {
+            "airports_api_url": "https://api.aviationwx.org/v1/airports",
+            "request_timeout": 5,
+        }
+    }
+    webcam = {
+        "index": 0,
+        "history_enabled": True,
+        "history_url": "/v1/airports/kspb/webcams/0/history",
+    }
+
+    with (
+        patch("app.archiver._rate_limit"),
+        patch("app.archiver.requests.get") as mock_get,
+    ):
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.json.return_value = {
+            "frames": [
+                {
+                    "timestamp": 1700000000,
+                    "url": "/v1/airports/kspb/webcams/0/history?ts=1700000000",
+                }
+            ]
+        }
+        mock_get.return_value = mock_resp
+
+        frames = fetch_history_frames("kspb", webcam, config)
+
+    assert len(frames) == 1
+    assert "/v1/v1/" not in frames[0]["url"]
+    assert frames[0]["url"] == (
+        "https://api.aviationwx.org/v1/airports/kspb/webcams/0/history?ts=1700000000"
+    )
 
 
 def test_fetch_image_urls_falls_back_to_page_scrape_when_api_empty():
@@ -850,7 +912,9 @@ def test_fetch_airport_list_sends_api_key_when_configured():
         fetch_airport_list(config)
 
     mock_get.assert_called_once()
-    assert mock_get.call_args.kwargs.get("headers") == {"X-API-Key": "test-partner-key"}
+    headers = mock_get.call_args.kwargs.get("headers", {})
+    assert headers.get("X-API-Key") == "test-partner-key"
+    assert "User-Agent" in headers
 
 
 def test_fetch_airport_list_retries_on_failure():
