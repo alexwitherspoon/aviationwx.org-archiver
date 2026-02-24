@@ -874,6 +874,211 @@ def test_sanitize_camera_name_lowercase_no_spaces():
     assert _sanitize_camera_name(None, fallback="cam_0") == "cam_0"
 
 
+def test_status_url_derives_from_airports_api():
+    """_status_url derives /v1/status from airports_api_url."""
+    from app.archiver import _status_url
+
+    config = {"source": {"airports_api_url": "https://api.aviationwx.org/v1/airports"}}
+    assert _status_url(config) == "https://api.aviationwx.org/v1/status"  # noqa: S105
+
+
+def test_status_url_returns_empty_when_no_airports_url():
+    """_status_url returns empty string when airports_api_url missing or empty."""
+    from app.archiver import _status_url
+
+    assert _status_url({}) == ""
+    assert _status_url({"source": {}}) == ""
+    assert _status_url({"source": {"airports_api_url": ""}}) == ""
+
+
+def test_detect_and_set_request_delay_uses_partner_limit_when_200_with_header():
+    """_detect_and_set_request_delay sets 50% of limit when header present."""
+    from app.archiver import _detect_and_set_request_delay
+
+    config = {
+        "source": {
+            "airports_api_url": "https://api.aviationwx.org/v1/airports",
+            "request_timeout": 5,
+        },
+    }
+    mock_resp = MagicMock()
+    mock_resp.ok = True
+    mock_resp.status_code = 200
+    mock_resp.headers = {"X-RateLimit-Limit": "500"}
+
+    with patch("app.archiver.requests.get", return_value=mock_resp):
+        _detect_and_set_request_delay(config)
+
+    # 50% of 500/min = 250/min -> delay = 120/500 = 0.24s
+    assert config["source"]["_request_delay_seconds"] == pytest.approx(0.24, rel=0.01)
+
+
+def test_detect_and_set_request_delay_uses_anonymous_when_401():
+    """_detect_and_set_request_delay uses 50% anonymous when API returns 401."""
+    from app.archiver import _detect_and_set_request_delay
+
+    config = {
+        "source": {
+            "airports_api_url": "https://api.aviationwx.org/v1/airports",
+            "request_timeout": 5,
+        },
+    }
+    mock_resp = MagicMock()
+    mock_resp.ok = False
+    mock_resp.status_code = 401
+    mock_resp.headers = {}
+
+    with patch("app.archiver.requests.get", return_value=mock_resp):
+        _detect_and_set_request_delay(config)
+
+    # 50% of 100/min = 1.2s
+    assert config["source"]["_request_delay_seconds"] == pytest.approx(1.2, rel=0.01)
+
+
+def test_detect_and_set_request_delay_uses_anonymous_when_no_header():
+    """_detect_and_set_request_delay uses anonymous when X-RateLimit-Limit missing."""
+    from app.archiver import _detect_and_set_request_delay
+
+    config = {
+        "source": {
+            "airports_api_url": "https://api.aviationwx.org/v1/airports",
+            "request_timeout": 5,
+        },
+    }
+    mock_resp = MagicMock()
+    mock_resp.ok = True
+    mock_resp.headers = {}
+
+    with patch("app.archiver.requests.get", return_value=mock_resp):
+        _detect_and_set_request_delay(config)
+
+    assert config["source"]["_request_delay_seconds"] == pytest.approx(1.2, rel=0.01)
+
+
+def test_detect_and_set_request_delay_uses_anonymous_when_header_invalid():
+    """_detect_and_set_request_delay uses anonymous when header non-numeric."""
+    from app.archiver import _detect_and_set_request_delay
+
+    config = {
+        "source": {
+            "airports_api_url": "https://api.aviationwx.org/v1/airports",
+            "request_timeout": 5,
+        },
+    }
+    mock_resp = MagicMock()
+    mock_resp.ok = True
+    mock_resp.headers = {"X-RateLimit-Limit": "invalid"}
+
+    with patch("app.archiver.requests.get", return_value=mock_resp):
+        _detect_and_set_request_delay(config)
+
+    assert config["source"]["_request_delay_seconds"] == pytest.approx(1.2, rel=0.01)
+
+
+def test_detect_and_set_request_delay_uses_default_when_url_empty():
+    """_detect_and_set_request_delay uses default when status URL cannot be derived."""
+    from app.archiver import _detect_and_set_request_delay
+    from app.constants import DEFAULT_REQUEST_DELAY_SECONDS
+
+    config = {"source": {"airports_api_url": ""}}
+
+    _detect_and_set_request_delay(config)
+
+    assert config["source"]["_request_delay_seconds"] == DEFAULT_REQUEST_DELAY_SECONDS
+
+
+def test_detect_and_set_request_delay_uses_default_when_request_fails():
+    """_detect_and_set_request_delay uses default delay when RequestException."""
+    import requests
+
+    from app.archiver import _detect_and_set_request_delay
+    from app.constants import DEFAULT_REQUEST_DELAY_SECONDS
+
+    config = {
+        "source": {
+            "airports_api_url": "https://api.aviationwx.org/v1/airports",
+            "request_timeout": 5,
+        },
+    }
+
+    with patch(
+        "app.archiver.requests.get",
+        side_effect=requests.RequestException("Connection refused"),
+    ):
+        _detect_and_set_request_delay(config)
+
+    assert config["source"]["_request_delay_seconds"] == DEFAULT_REQUEST_DELAY_SECONDS
+
+
+def test_run_archive_calls_detect_and_set_request_delay():
+    """run_archive calls _detect_and_set_request_delay before fetch_airport_list."""
+    from app.archiver import run_archive
+
+    config = {
+        "source": {
+            "airports_api_url": "https://api.aviationwx.org/v1/airports",
+            "request_timeout": 5,
+            "max_retries": 1,
+            "retry_delay": 0,
+        },
+        "archive": {"output_dir": "/tmp", "retention_days": 0},
+        "airports": {"archive_all": True, "selected": []},
+    }
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status.return_value = None
+    mock_resp.json.return_value = {"airports": []}
+
+    with patch("app.archiver.requests.get", return_value=mock_resp) as mock_get:
+        run_archive(config)
+
+    # First call is status (for rate limit probe), second is airports
+    assert mock_get.call_count >= 2
+    # First call should be to /status
+    first_url = mock_get.call_args_list[0][0][0]
+    assert "status" in first_url
+
+
+def test_rate_limit_uses_detected_delay_when_set():
+    """_rate_limit sleeps with _request_delay_seconds when set by detection."""
+    from app.archiver import _rate_limit
+
+    config = {
+        "source": {
+            "_request_delay_seconds": 0.24,
+            "request_delay_seconds": 1.2,
+        },
+    }
+
+    with patch("app.archiver.time.sleep") as mock_sleep:
+        _rate_limit(config)
+
+    mock_sleep.assert_called_once_with(0.24)
+
+
+def test_rate_limit_uses_config_delay_when_detection_not_run():
+    """_rate_limit uses request_delay_seconds when _request_delay_seconds not set."""
+    from app.archiver import _rate_limit
+
+    config = {"source": {"request_delay_seconds": 2.0}}
+
+    with patch("app.archiver.time.sleep") as mock_sleep:
+        _rate_limit(config)
+
+    mock_sleep.assert_called_once_with(2.0)
+
+
+def test_rate_limit_skips_sleep_when_delay_zero():
+    """_rate_limit does not sleep when delay is 0."""
+    from app.archiver import _rate_limit
+
+    config = {"source": {"_request_delay_seconds": 0}}
+
+    with patch("app.archiver.time.sleep") as mock_sleep:
+        _rate_limit(config)
+
+    mock_sleep.assert_not_called()
+
+
 def test_setup_airport_archive_creates_metadata_and_structure():
     """setup_airport_archive writes metadata.json and creates camera dirs."""
     from app.archiver import setup_airport_archive

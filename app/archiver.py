@@ -18,6 +18,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 from app.constants import (
+    API_LIMIT_ANONYMOUS_REQ_PER_MIN,
     BYTES_PER_GIB,
     DEFAULT_REQUEST_DELAY_SECONDS,
     MD5_READ_CHUNK_SIZE,
@@ -64,16 +65,87 @@ def _api_headers(config: dict) -> dict:
     return headers
 
 
+def _status_url(config: dict) -> str:
+    """Derive /v1/status URL from airports_api_url."""
+    url = config.get("source", {}).get("airports_api_url", "")
+    if "/airports" in url:
+        return url.replace("/airports", "/status")
+    return url.rstrip("/").rsplit("/", 1)[0] + "/status" if url else ""
+
+
+def _detect_and_set_request_delay(config: dict) -> None:
+    """
+    Probe the API for X-RateLimit-Limit and set request delay to 50% of limit.
+
+    Working API key: uses 50% of partner limit from response.
+    No key or invalid key: uses 50% of anonymous limit (100/min).
+    """
+    source = config.setdefault("source", {})
+    url = _status_url(config)
+    if not url:
+        source["_request_delay_seconds"] = DEFAULT_REQUEST_DELAY_SECONDS
+        logger.debug(
+            "Could not derive status URL; using default delay %.2fs",
+            DEFAULT_REQUEST_DELAY_SECONDS,
+        )
+        return
+
+    timeout = source.get("request_timeout", 30)
+    try:
+        resp = requests.get(url, timeout=timeout, headers=_api_headers(config))
+        limit_header = resp.headers.get("X-RateLimit-Limit") or resp.headers.get(
+            "x-ratelimit-limit"
+        )
+        if resp.ok and limit_header:
+            try:
+                limit = int(limit_header)
+                if limit > 0:
+                    # 50% of limit: delay = 60 / (limit/2) = 120/limit seconds
+                    delay = 120.0 / limit
+                    source["_request_delay_seconds"] = delay
+                    logger.info(
+                        "Detected API limit %d req/min; using %.2fs delay (50%%)",
+                        limit,
+                        delay,
+                    )
+                    return
+            except ValueError:
+                pass
+
+        # 401 (invalid key) or missing headers: use 50% of anonymous
+        limit = API_LIMIT_ANONYMOUS_REQ_PER_MIN
+        delay = 120.0 / limit
+        source["_request_delay_seconds"] = delay
+        if resp.status_code == 401:
+            logger.info(
+                "API key invalid or rejected; using anonymous limit %.2fs delay",
+                delay,
+            )
+        else:
+            logger.debug(
+                "No X-RateLimit-Limit in response; using anonymous %.2fs delay",
+                delay,
+            )
+    except requests.RequestException as exc:
+        source["_request_delay_seconds"] = DEFAULT_REQUEST_DELAY_SECONDS
+        logger.warning(
+            "Rate limit probe failed (%s); using default %.2fs delay",
+            exc,
+            DEFAULT_REQUEST_DELAY_SECONDS,
+        )
+
+
 def _rate_limit(config: dict) -> None:
     """
     Sleep before API requests to respect rate limits.
 
-    AviationWX anonymous: 100 req/min; Partner: 500 req/min. Default uses half
-    of anonymous limit (50 req/min). Set to 0 for Partner API keys.
+    Uses dynamically detected delay (_request_delay_seconds) when set by
+    _detect_and_set_request_delay, otherwise request_delay_seconds from config.
     """
-    delay = config.get("source", {}).get(
-        "request_delay_seconds", DEFAULT_REQUEST_DELAY_SECONDS
-    )
+    source = config.get("source", {})
+    delay = source.get("_request_delay_seconds")
+    if delay is None:
+        delay = source.get("request_delay_seconds", DEFAULT_REQUEST_DELAY_SECONDS)
     if delay > 0:
         time.sleep(delay)
 
@@ -1182,6 +1254,10 @@ def run_archive(
         logger.error("Invalid config structure (missing source or archive): %s", exc)
         stats["errors"] += 1
         return stats
+
+    # Probe API for X-RateLimit-Limit; set delay to 50% of limit (partner or
+    # anonymous depending on key validity)
+    _detect_and_set_request_delay(config)
 
     all_airports = fetch_airport_list(config)
     if not all_airports:

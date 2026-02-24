@@ -52,7 +52,8 @@ source:
   # History API: fetch all frames, download only missing. When false: one image per webcam per run.
   use_history_api: true
 
-  # Delay between API requests (seconds). Anonymous: 100/min; Partner: 500/min. Set 0 for Partner keys.
+  # Fallback delay (seconds) when rate-limit probe fails. Otherwise auto-detected from
+  # X-RateLimit-Limit: 50% of partner limit (with key) or anonymous limit (without).
   request_delay_seconds: 1.2
 
 # ============================================================

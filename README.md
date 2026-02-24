@@ -73,7 +73,7 @@ Key settings:
 | `airports.selected` | `[KSPB, KAWO]` | Specific airport codes when archive_all is false |
 | `source.use_history_api` | `true` | Use history API to fetch all frames, download only missing; `false` = current image only per run |
 | `source.api_key` | `""` | Partner API key (optional). Enables 500 req/min vs 100/min anonymous. |
-| `source.request_delay_seconds` | `1.2` | Delay before each API request (half of 100/min anonymous; set 0 for Partner keys) |
+| `source.request_delay_seconds` | `1.2` | Fallback delay when rate-limit probe fails; otherwise auto-detected from API (50% of limit) |
 | `web.enabled` | `true` | Set to `false` in secure environments to run scheduler only (no web UI) |
 | `web.port` | `8080` | Web GUI port |
 | `logging.level` | `INFO` | Log verbosity: DEBUG, INFO, WARNING, ERROR |
