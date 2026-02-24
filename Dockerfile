@@ -38,7 +38,8 @@ WORKDIR /app
 COPY --from=deps /usr/local/lib/python3.14/site-packages /usr/local/lib/python3.14/site-packages
 COPY --from=deps /usr/local/bin /usr/local/bin
 
-# Copy application source
+# Copy application source (pyproject.toml needed for version display in web UI)
+COPY pyproject.toml .
 COPY app/ ./app/
 COPY main.py .
 

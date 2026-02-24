@@ -36,7 +36,8 @@ def _get_version() -> str:
                     return data.get("project", {}).get("version", "0.0.0")
     except Exception:
         pass
-    return "0.3.0"
+    # Fallback when package not installed and pyproject.toml not found (e.g. old image)
+    return "Unknown Version"
 
 
 def _get_git_sha() -> str:
