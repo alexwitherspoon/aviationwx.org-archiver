@@ -1,6 +1,6 @@
 [project]
 name = "aviationwx-archiver"
-version = "0.3.1"
+version = "0.3.2"
 description = "Archives webcam images from AviationWX.org"
 requires-python = ">=3.12"
 
