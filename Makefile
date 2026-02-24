@@ -33,7 +33,6 @@ build: ## Build the Docker image
 
 .PHONY: up
 up: ## Start the archiver container (builds if needed)
-	@[ -f $(CONFIG_FILE) ] || (cp config/config.yaml.example $(CONFIG_FILE) && echo "Created $(CONFIG_FILE) from example")
 	docker compose up --build -d
 	@echo "Web GUI: http://localhost:8080"
 
