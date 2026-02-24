@@ -66,6 +66,8 @@ jobs:
         with:
           context: .
           file: Dockerfile
+          build-args: |
+            GIT_SHA=${{ steps.version.outputs.VERSION }}
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           tags: ${{ steps.meta.outputs.tags }}
