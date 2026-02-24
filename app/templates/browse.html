@@ -39,7 +39,7 @@
   </div>
 {% else %}
   {% for airport, years in tree.items() %}
-  <details open>
+  <details>
     <summary class="card" style="margin-bottom:4px; font-weight:600; font-size:15px;">✈ {{ airport }}</summary>
     {% for year, months in years.items() %}
     <details style="margin-left:16px;">
