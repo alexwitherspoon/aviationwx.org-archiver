@@ -1195,7 +1195,10 @@ def test_fetch_history_frames_returns_empty_when_no_history_url():
 
     webcam = {"index": 0, "history_enabled": True, "history_url": None}
     config = {
-        "source": {"airports_api_url": "https://api.example.com/v1/airports", "request_timeout": 5},
+        "source": {
+            "airports_api_url": "https://api.example.com/v1/airports",
+            "request_timeout": 5,
+        },
     }
     assert fetch_history_frames("KSPB", webcam, config) == []
 
@@ -1291,7 +1294,9 @@ def test_save_history_image_returns_none_on_oserror():
     config = {"archive": {"output_dir": "/tmp"}}
     data = b"\xff\xd8\xff"
 
-    with patch("app.archiver.os.makedirs", side_effect=OSError(13, "Permission denied")):
+    with patch(
+        "app.archiver.os.makedirs", side_effect=OSError(13, "Permission denied")
+    ):
         result = save_history_image(data, "KSPB", 0, 1700000000, config)
 
     assert result is None
@@ -1365,7 +1370,7 @@ def test_run_archive_skips_airport_with_no_code():
 
 
 def test_run_archive_use_history_false_uses_current_only():
-    """run_archive with use_history_api=False uses current image only (no history API)."""
+    """run_archive with use_history_api=False uses current image only."""
     from app.archiver import run_archive
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1575,7 +1580,7 @@ def test_apply_retention_returns_zero_when_output_dir_missing():
 
 
 def test_apply_retention_by_size_no_deletion_when_under_limit():
-    """apply_retention with retention_max_gb does nothing when total size is under limit."""
+    """apply_retention does nothing when total size is under retention_max_gb."""
     from app.archiver import apply_retention
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1624,8 +1629,7 @@ def test_apply_retention_by_size_removes_oldest_first():
 
         assert deleted >= 2
         remaining = sum(
-            os.path.getsize(os.path.join(tmpdir, f))
-            for f in os.listdir(tmpdir)
+            os.path.getsize(os.path.join(tmpdir, f)) for f in os.listdir(tmpdir)
         )
         assert remaining <= 2.5 * 1024 * 1024  # Allow small tolerance
         # Oldest (file_0) must be gone; newest (file_3) must remain
@@ -1660,9 +1664,7 @@ def test_apply_retention_by_size_works_with_nested_archive_structure():
         deleted = apply_retention(config)
 
         assert deleted >= 2
-        remaining_files = [
-            f for f in os.listdir(archive_path) if f.endswith(".jpg")
-        ]
+        remaining_files = [f for f in os.listdir(archive_path) if f.endswith(".jpg")]
         assert len(remaining_files) <= 1
         # Newest (frame_2) should remain
         assert os.path.exists(os.path.join(archive_path, "frame_2.jpg"))
@@ -1751,7 +1753,7 @@ def test_apply_retention_by_days_and_size_both_applied():
 
 def test_run_archive_applies_retention_including_max_gb():
     """run_archive calls apply_retention with config including retention_max_gb."""
-    from app.archiver import apply_retention, run_archive
+    from app.archiver import run_archive
 
     with tempfile.TemporaryDirectory() as tmpdir:
         config = {
