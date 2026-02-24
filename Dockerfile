@@ -35,7 +35,7 @@ RUN groupadd -r archiver && useradd -r -g archiver -d /app -s /sbin/nologin arch
 WORKDIR /app
 
 # Copy installed packages from the deps stage
-COPY --from=deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=deps /usr/local/lib/python3.14/site-packages /usr/local/lib/python3.14/site-packages
 COPY --from=deps /usr/local/bin /usr/local/bin
 
 # Copy application source
