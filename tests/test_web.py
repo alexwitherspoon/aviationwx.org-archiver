@@ -461,6 +461,24 @@ def test_configuration_post_shows_error_on_validation_failure(flask_client):
     assert b"Invalid" in resp.data or b"error" in resp.data.lower()
 
 
+def test_configuration_post_rejects_root_output_dir(flask_client):
+    """POST to /config rejects output_dir that is root or contains path traversal."""
+    for bad_dir in ("/", "\\", "/archive/../etc"):
+        resp = flask_client.post(
+            "/config",
+            data={
+                "interval_minutes": "15",
+                "output_dir": bad_dir,
+                "retention_days": "0",
+                "retention_max_gb": "0",
+                "selected_airports": "KSPB",
+                "log_level": "INFO",
+            },
+        )
+        assert resp.status_code == 200
+        assert b"Invalid" in resp.data or b"error" in resp.data.lower()
+
+
 def test_trigger_archive_redirects_to_config_when_invalid(flask_client):
     """POST to /run redirects to config page when config is invalid."""
     config = {
@@ -563,6 +581,21 @@ def test_serve_archive_file_404_for_path_traversal(flask_client):
             flask_app.config["ARCHIVER_CONFIG"] = config
 
             resp = flask_client.get("/archive/../../../etc/passwd")
+
+        assert resp.status_code == 404
+    finally:
+        config["archive"]["output_dir"] = orig_dir
+
+
+def test_serve_archive_file_404_when_output_dir_is_root(flask_client):
+    """GET /archive returns 404 when output_dir is / (prevents serving system files)."""
+    config = flask_app.config["ARCHIVER_CONFIG"]
+    orig_dir = config["archive"]["output_dir"]
+    try:
+        config["archive"]["output_dir"] = "/"
+        flask_app.config["ARCHIVER_CONFIG"] = config
+
+        resp = flask_client.get("/archive/etc/passwd")
 
         assert resp.status_code == 404
     finally:

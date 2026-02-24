@@ -218,10 +218,25 @@ def test_validate_config_requires_output_dir():
 
     config = {
         "archive": {"output_dir": "", "retention_days": 0},
+        "source": {"airports_api_url": "https://api.example.com/airports"},
         "airports": {"archive_all": True, "selected": []},
     }
     errors = validate_config(config)
     assert any("output" in e.lower() or "directory" in e.lower() for e in errors)
+
+
+def test_validate_config_rejects_root_output_dir():
+    """Config is invalid when output_dir is root or contains path traversal."""
+    from app.config import validate_config
+
+    base = {
+        "source": {"airports_api_url": "https://api.example.com/airports"},
+        "airports": {"archive_all": True, "selected": []},
+    }
+    for bad_dir in ("/", "\\", "/archive/../etc"):
+        config = {**base, "archive": {"output_dir": bad_dir, "retention_days": 0}}
+        errors = validate_config(config)
+        assert any("root" in e.lower() or "traversal" in e.lower() for e in errors)
 
 
 # ---------------------------------------------------------------------------

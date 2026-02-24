@@ -291,7 +291,10 @@ def serve_archive_file(subpath: str):
     config = app.config["ARCHIVER_CONFIG"]
     output_dir = config["archive"]["output_dir"]
     full_path = os.path.normpath(os.path.join(output_dir, subpath))
-    if not os.path.realpath(full_path).startswith(os.path.realpath(output_dir)):
+    resolved_output = os.path.realpath(output_dir)
+    resolved_path = os.path.realpath(full_path)
+    # Require path to be strictly under output_dir (prevents root "/" bypass)
+    if not resolved_path.startswith(resolved_output + os.sep):
         abort(404)
     if not os.path.isfile(full_path):
         abort(404)
@@ -361,6 +364,8 @@ def _form_to_config(form, existing_config: dict) -> dict:
     output_dir = form.get("output_dir", "").strip()
     if not output_dir:
         raise ValueError("output_dir must not be empty")
+    if ".." in output_dir or output_dir in ("/", "\\"):
+        raise ValueError("output_dir must not be root or contain path traversal")
     config["archive"]["output_dir"] = output_dir
 
     retention = int(form.get("retention_days", 0))

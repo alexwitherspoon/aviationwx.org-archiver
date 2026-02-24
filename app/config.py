@@ -211,6 +211,10 @@ def validate_config(config: dict) -> list[str]:
     output_dir = (config.get("archive", {}).get("output_dir") or "").strip()
     if not output_dir:
         errors.append("Archive output directory must not be empty.")
+    elif ".." in output_dir or output_dir in ("/", "\\"):
+        errors.append(
+            "Archive output directory must not be root or contain path traversal (..)."
+        )
 
     source = config.get("source", {})
     if not (source.get("airports_api_url") or "").strip():
