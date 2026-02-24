@@ -21,6 +21,13 @@ def test_get_state_returns_dict_with_expected_keys():
     assert isinstance(state["log_entries"], list)
 
 
+def test_get_state_excludes_internal_keys():
+    """get_state does not expose internal keys like _log_bytes."""
+    state = get_state()
+    assert "_log_bytes" not in state
+    assert not any(k.startswith("_") for k in state)
+
+
 def test_trigger_run_returns_false_when_config_invalid():
     """trigger_run returns False when config validation fails."""
     config = {
@@ -191,3 +198,24 @@ def test_archive_job_sets_running_false_on_exception():
                         _archive_job(config)
 
     assert state_ref["running"] is False
+
+
+def test_append_log_trims_when_exceeding_max_bytes():
+    """_append_log trims oldest entries when total size exceeds _MAX_LOG_BYTES."""
+    from app.scheduler import _append_log, _state, _state_lock
+
+    # Reset state
+    with _state_lock:
+        _state["log_entries"] = []
+        _state["_log_bytes"] = 0
+
+    # Use large messages (~550 bytes each) and small limit to trigger trim quickly
+    large_msg = "x" * 500
+    with patch("app.scheduler._MAX_LOG_BYTES", 2000):
+        for _ in range(50):
+            _append_log(large_msg, "INFO")
+
+    with _state_lock:
+        # Should have trimmed; total bytes under limit
+        assert _state["_log_bytes"] <= 2000
+        assert len(_state["log_entries"]) < 50

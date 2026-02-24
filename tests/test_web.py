@@ -15,6 +15,8 @@ from app.web import (
     _archive_tree,
     _disk_usage,
     _form_to_config,
+    _format_size_in_unit,
+    _pick_display_unit,
 )
 from app.web import (
     app as flask_app,
@@ -69,7 +71,7 @@ def test_archive_tree_ignores_non_digit_directories():
 
 
 def test_disk_usage_returns_dict_when_path_valid():
-    """_disk_usage returns used_gb, total_gb, free_gb, percent_used when path exists."""
+    """_disk_usage returns raw and formatted disk usage when path exists."""
     with tempfile.TemporaryDirectory() as tmpdir:
         result = _disk_usage(tmpdir)
 
@@ -78,6 +80,11 @@ def test_disk_usage_returns_dict_when_path_valid():
     assert "total_gb" in result
     assert "free_gb" in result
     assert "percent_used" in result
+    assert "used_fmt" in result
+    assert "free_fmt" in result
+    assert "total_fmt" in result
+    assert "unit" in result
+    assert result["unit"] in ("GB", "TB", "PB")
     assert isinstance(result["used_gb"], (int, float))
     assert isinstance(result["total_gb"], (int, float))
 
@@ -87,6 +94,99 @@ def test_disk_usage_returns_none_on_oserror():
     with patch("app.web.shutil.disk_usage", side_effect=OSError(2, "No such file")):
         result = _disk_usage("/nonexistent")
     assert result is None
+
+
+def test_pick_display_unit_returns_gb_for_small_disks():
+    """_pick_display_unit returns GB when total < 1 TiB."""
+    assert _pick_display_unit(500 * (1024**3)) == "GB"
+    assert _pick_display_unit((1024**4) - 1) == "GB"
+
+
+def test_pick_display_unit_returns_tb_for_disks_over_1tib():
+    """_pick_display_unit returns TB when total >= 1 TiB."""
+    assert _pick_display_unit(1024**4) == "TB"
+    assert _pick_display_unit(2 * (1024**4)) == "TB"
+    assert _pick_display_unit((1024**5) - 1) == "TB"
+
+
+def test_pick_display_unit_returns_pb_for_disks_over_1pib():
+    """_pick_display_unit returns PB when total >= 1 PiB."""
+    assert _pick_display_unit(1024**5) == "PB"
+    assert _pick_display_unit(2 * (1024**5)) == "PB"
+
+
+def test_format_size_in_unit_converts_correctly():
+    """_format_size_in_unit converts bytes to GB, TB, PB."""
+    one_gib = 1024**3
+    one_tib = 1024**4
+    one_pib = 1024**5
+    assert _format_size_in_unit(one_gib, "GB") == 1.0
+    assert _format_size_in_unit(one_tib, "TB") == 1.0
+    assert _format_size_in_unit(one_pib, "PB") == 1.0
+    assert _format_size_in_unit(2 * one_gib, "GB") == 2.0
+
+
+def test_disk_usage_uses_gb_for_small_disks():
+    """_disk_usage uses GB unit when total < 1 TiB."""
+    usage = type("Usage", (), {})()
+    usage.total = 500 * (1024**3)  # 500 GiB
+    usage.used = 100 * (1024**3)
+    usage.free = 400 * (1024**3)
+
+    with patch("app.web.shutil.disk_usage", return_value=usage):
+        result = _disk_usage("/some/path")
+
+    assert result is not None
+    assert result["unit"] == "GB"
+
+
+def test_disk_usage_uses_tb_for_large_disks():
+    """_disk_usage uses TB unit when total >= 1 TiB."""
+    usage = type("Usage", (), {})()
+    usage.total = 2 * (1024**4)
+    usage.used = 1 * (1024**4)
+    usage.free = 1 * (1024**4)
+
+    with patch("app.web.shutil.disk_usage", return_value=usage):
+        result = _disk_usage("/some/path")
+
+    assert result is not None
+    assert result["unit"] == "TB"
+    assert result["total_fmt"] == "2.00"
+    assert result["used_fmt"] == "1.00"
+    assert result["free_fmt"] == "1.00"
+
+
+def test_disk_usage_uses_pb_for_petabyte_disks():
+    """_disk_usage uses PB unit when total >= 1 PiB."""
+    usage = type("Usage", (), {})()
+    usage.total = 2 * (1024**5)
+    usage.used = 1 * (1024**5)
+    usage.free = 1 * (1024**5)
+
+    with patch("app.web.shutil.disk_usage", return_value=usage):
+        result = _disk_usage("/some/path")
+
+    assert result is not None
+    assert result["unit"] == "PB"
+    assert result["total_fmt"] == "2.00"
+
+
+def test_disk_usage_formatted_values_include_thousand_separators():
+    """_disk_usage formats values >= 1000 with thousand separators."""
+    usage = type("Usage", (), {})()
+    # 1500 TiB: >= 1 TiB, and 1500 >= 1024 so >= 1 PiB -> unit is PB
+    # Use 1500 PiB to get comma in PB unit
+    usage.total = 1500 * (1024**5)
+    usage.used = 900 * (1024**5)
+    usage.free = 600 * (1024**5)
+
+    with patch("app.web.shutil.disk_usage", return_value=usage):
+        result = _disk_usage("/some/path")
+
+    assert result is not None
+    assert result["unit"] == "PB"
+    assert "1,500.00" in result["total_fmt"]
 
 
 def test_archive_stats_returns_empty_when_output_dir_missing():
@@ -147,6 +247,7 @@ def test_form_to_config_raises_when_interval_less_than_one():
         "interval_minutes": "0",
         "output_dir": "/archive",
         "retention_days": "0",
+        "retention_max_gb": "0",
         "selected_airports": "KSPB",
         "log_level": "INFO",
     }.get(k, d)
@@ -162,12 +263,30 @@ def test_form_to_config_raises_when_output_dir_empty():
         "interval_minutes": "15",
         "output_dir": "",
         "retention_days": "0",
+        "retention_max_gb": "0",
         "selected_airports": "KSPB",
         "log_level": "INFO",
     }.get(k, d)
     form.__contains__ = lambda self, k: k in ["fetch_on_start"]
 
     with pytest.raises(ValueError, match="output_dir"):
+        _form_to_config(form, DEFAULT_CONFIG)
+
+
+def test_form_to_config_raises_when_retention_max_gb_negative():
+    """_form_to_config raises ValueError when retention_max_gb < 0."""
+    form = MagicMock()
+    form.get.side_effect = lambda k, d=None: {
+        "interval_minutes": "15",
+        "output_dir": "/archive",
+        "retention_days": "0",
+        "retention_max_gb": "-1",
+        "selected_airports": "KSPB",
+        "log_level": "INFO",
+    }.get(k, d)
+    form.__contains__ = lambda self, k: k in ["fetch_on_start"]
+
+    with pytest.raises(ValueError, match="retention_max_gb"):
         _form_to_config(form, DEFAULT_CONFIG)
 
 
@@ -178,6 +297,7 @@ def test_form_to_config_raises_when_retention_negative():
         "interval_minutes": "15",
         "output_dir": "/archive",
         "retention_days": "-1",
+        "retention_max_gb": "0",
         "selected_airports": "KSPB",
         "log_level": "INFO",
     }.get(k, d)
@@ -194,6 +314,7 @@ def test_form_to_config_raises_when_log_level_invalid():
         "interval_minutes": "15",
         "output_dir": "/archive",
         "retention_days": "0",
+        "retention_max_gb": "0",
         "selected_airports": "KSPB",
         "log_level": "INVALID",
     }.get(k, d)
@@ -203,6 +324,40 @@ def test_form_to_config_raises_when_log_level_invalid():
         _form_to_config(form, DEFAULT_CONFIG)
 
 
+def test_form_to_config_sets_retention_max_gb():
+    """_form_to_config sets archive.retention_max_gb from form."""
+    form = MagicMock()
+    form.get.side_effect = lambda k, d=None: {
+        "interval_minutes": "15",
+        "output_dir": "/archive",
+        "retention_days": "30",
+        "retention_max_gb": "100",
+        "selected_airports": "KSPB",
+        "log_level": "INFO",
+    }.get(k, d)
+    form.__contains__ = lambda self, k: k in ["fetch_on_start"]
+
+    config = _form_to_config(form, DEFAULT_CONFIG)
+    assert config["archive"]["retention_max_gb"] == 100.0
+
+
+def test_form_to_config_retention_max_gb_empty_becomes_zero():
+    """_form_to_config treats empty retention_max_gb as 0."""
+    form = MagicMock()
+    form.get.side_effect = lambda k, d=None: {
+        "interval_minutes": "15",
+        "output_dir": "/archive",
+        "retention_days": "0",
+        "retention_max_gb": "",
+        "selected_airports": "KSPB",
+        "log_level": "INFO",
+    }.get(k, d)
+    form.__contains__ = lambda self, k: k in ["fetch_on_start"]
+
+    config = _form_to_config(form, DEFAULT_CONFIG)
+    assert config["archive"]["retention_max_gb"] == 0.0
+
+
 def test_form_to_config_sets_api_key_when_provided():
     """_form_to_config sets source.api_key when form provides non-empty value."""
     form = MagicMock()
@@ -210,6 +365,7 @@ def test_form_to_config_sets_api_key_when_provided():
         "interval_minutes": "15",
         "output_dir": "/archive",
         "retention_days": "0",
+        "retention_max_gb": "0",
         "selected_airports": "KSPB",
         "log_level": "INFO",
         "base_url": "https://aviationwx.org",
@@ -269,6 +425,7 @@ def test_configuration_post_shows_error_on_save_failure(flask_client):
                 "interval_minutes": "15",
                 "output_dir": "/archive",
                 "retention_days": "0",
+                "retention_max_gb": "0",
                 "selected_airports": "KSPB",
                 "log_level": "INFO",
             },
@@ -286,6 +443,7 @@ def test_configuration_post_shows_error_on_validation_failure(flask_client):
             "interval_minutes": "0",
             "output_dir": "/archive",
             "retention_days": "0",
+            "retention_max_gb": "0",
             "selected_airports": "KSPB",
             "log_level": "INFO",
         },
@@ -332,8 +490,43 @@ def test_dashboard_footer_shows_version(flask_client):
     assert b"v0." in resp.data or b"0.2" in resp.data
 
 
+def test_dashboard_footer_shows_single_version_no_duplicate(flask_client):
+    """Footer shows version once; no duplicate version or git sha in footer."""
+    resp = flask_client.get("/")
+    assert resp.status_code == 200
+    text = resp.data.decode("utf-8")
+    # Footer format: AviationWX.org Archiver vX.X.X — Part of... MIT License
+    assert "AviationWX.org Archiver" in text
+    assert "Part of the" in text
+    assert "AviationWX.org" in text
+    assert "MIT License" in text
+    # Version should appear exactly once in footer (not v0.2.0 v0.2.0)
+    footer_start = text.find("<footer>")
+    footer_end = text.find("</footer>")
+    assert footer_start >= 0 and footer_end >= 0
+    footer = text[footer_start:footer_end]
+    version_count = footer.count(VERSION)
+    assert version_count == 1, f"Expected version once in footer, found {version_count}"
+
+
+def test_dashboard_disk_usage_shows_unit_when_present(flask_client):
+    """Dashboard Disk Usage section shows formatted values with unit (GB/TB/PB)."""
+    config = flask_app.config["ARCHIVER_CONFIG"]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config["archive"]["output_dir"] = tmpdir
+        flask_app.config["ARCHIVER_CONFIG"] = config
+
+        resp = flask_client.get("/")
+
+    assert resp.status_code == 200
+    text = resp.data.decode("utf-8")
+    assert "Disk Usage" in text
+    # Should show unit (GB for small tmp dir)
+    assert " GB</div>" in text or " TB</div>" in text or " PB</div>" in text
+
+
 def test_api_status_includes_disk_usage_when_available(flask_client):
-    """GET /api/status includes disk_usage when output_dir exists."""
+    """GET /api/status includes disk_usage with raw and formatted values."""
     config = flask_app.config["ARCHIVER_CONFIG"]
     with tempfile.TemporaryDirectory() as tmpdir:
         config["archive"]["output_dir"] = tmpdir
@@ -345,3 +538,10 @@ def test_api_status_includes_disk_usage_when_available(flask_client):
     assert data["status"] == "ok"
     assert "disk_usage" in data
     assert data["disk_usage"] is not None
+    du = data["disk_usage"]
+    assert "used_gb" in du
+    assert "total_gb" in du
+    assert "used_fmt" in du
+    assert "total_fmt" in du
+    assert "unit" in du
+    assert du["unit"] in ("GB", "TB", "PB")

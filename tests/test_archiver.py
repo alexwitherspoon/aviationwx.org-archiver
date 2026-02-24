@@ -132,6 +132,7 @@ def test_validate_config_valid_with_archive_all():
     config = {
         "archive": {"output_dir": "/archive", "retention_days": 0},
         "airports": {"archive_all": True, "selected": []},
+        "source": {"airports_api_url": "https://api.example.com/airports"},
     }
     assert validate_config(config) == []
 
@@ -143,6 +144,7 @@ def test_validate_config_valid_with_selected():
     config = {
         "archive": {"output_dir": "/archive", "retention_days": 0},
         "airports": {"archive_all": False, "selected": ["KSPB"]},
+        "source": {"airports_api_url": "https://api.example.com/airports"},
     }
     assert validate_config(config) == []
 
@@ -193,6 +195,20 @@ def test_check_host_resources_no_warning_when_output_dir_ok():
             "output_dir" in s or "Archive" in s or "writable" in s.lower()
             for s in warn_strs
         )
+
+
+def test_validate_config_requires_source_api_url():
+    """Config is invalid when source.airports_api_url is missing or empty."""
+    from app.config import validate_config
+
+    config = {
+        "archive": {"output_dir": "/archive"},
+        "airports": {"archive_all": True, "selected": []},
+        "source": {"airports_api_url": ""},
+    }
+    errors = validate_config(config)
+    assert len(errors) >= 1
+    assert "airports_api_url" in errors[0].lower() or "source" in errors[0].lower()
 
 
 def test_validate_config_requires_output_dir():
@@ -560,6 +576,36 @@ def test_fetch_image_urls_tries_page_scrape_when_webcam_api_returns_non_ok():
     assert "webcam_snapshot" in urls[0]
 
 
+def test_fetch_image_urls_page_non_ok_falls_through_to_warning():
+    """When airport page returns non-OK, we log debug and eventually warn."""
+    from app.archiver import fetch_image_urls
+
+    config = {
+        "source": {
+            "base_url": "https://aviationwx.org",
+            "airports_api_url": "https://api.aviationwx.org/v1/airports",
+            "request_timeout": 30,
+        },
+    }
+    airport = {"id": "kspb", "icao": "KSPB"}
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        if "webcams" in url:
+            resp.ok = True
+            resp.json.return_value = {"webcams": []}
+        else:
+            resp.ok = False
+            resp.status_code = 404
+        resp.text = "<html></html>"
+        return resp
+
+    with patch("app.archiver.requests.get", side_effect=mock_get):
+        urls = fetch_image_urls(airport, config)
+
+    assert urls == []
+
+
 def test_fetch_image_urls_logs_warning_when_no_images_found():
     """When no images found, a warning is logged with diagnostic info."""
     from app.archiver import fetch_image_urls
@@ -901,6 +947,62 @@ def test_fetch_airport_list_returns_empty_on_invalid_json():
     assert airports == []
 
 
+def test_fetch_airport_list_returns_empty_when_airports_non_list():
+    """fetch_airport_list returns [] when API returns non-list (e.g. airports: 123)."""
+    from app.archiver import fetch_airport_list
+
+    config = {
+        "source": {
+            "airports_api_url": "https://api.example.com/airports",
+            "request_timeout": 5,
+            "max_retries": 1,
+            "retry_delay": 0,
+        },
+    }
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status.return_value = None
+    mock_resp.json.return_value = {"airports": "invalid"}
+
+    with patch("app.archiver.requests.get", return_value=mock_resp):
+        airports = fetch_airport_list(config)
+
+    assert airports == []
+
+
+# ---------------------------------------------------------------------------
+# parse_storage_gb tests (constants)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_storage_gb_accepts_numeric_strings():
+    """parse_storage_gb parses '10', '10.5', '0.002' as GB."""
+    from app.constants import parse_storage_gb
+
+    assert parse_storage_gb("10") == 10.0
+    assert parse_storage_gb("10.5") == 10.5
+    assert parse_storage_gb("0.002") == 0.002
+    assert parse_storage_gb(100) == 100.0
+
+
+def test_parse_storage_gb_accepts_tb_suffix():
+    """parse_storage_gb converts '1TB', '1 TB' to GB (1024)."""
+    from app.constants import parse_storage_gb
+
+    assert parse_storage_gb("1TB") == 1024.0
+    assert parse_storage_gb("1 TB") == 1024.0
+    assert parse_storage_gb("0.5TB") == 512.0
+
+
+def test_parse_storage_gb_returns_zero_for_empty_or_invalid():
+    """parse_storage_gb returns 0 for None, '', or invalid input."""
+    from app.constants import parse_storage_gb
+
+    assert parse_storage_gb(None) == 0.0
+    assert parse_storage_gb("") == 0.0
+    assert parse_storage_gb("  ") == 0.0
+    assert parse_storage_gb("invalid") == 0.0
+
+
 # ---------------------------------------------------------------------------
 # apply_retention tests
 # ---------------------------------------------------------------------------
@@ -1087,6 +1189,17 @@ def test_run_archive_logs_warning_when_zero_images_fetched():
     assert any("No images" in c for c in warning_calls)
 
 
+def test_fetch_history_frames_returns_empty_when_no_history_url():
+    """fetch_history_frames returns [] when webcam has no history_url."""
+    from app.archiver import fetch_history_frames
+
+    webcam = {"index": 0, "history_enabled": True, "history_url": None}
+    config = {
+        "source": {"airports_api_url": "https://api.example.com/v1/airports", "request_timeout": 5},
+    }
+    assert fetch_history_frames("KSPB", webcam, config) == []
+
+
 def test_fetch_history_frames_returns_frames():
     """fetch_history_frames returns list of frame dicts from history API."""
     from app.archiver import fetch_history_frames
@@ -1122,6 +1235,14 @@ def test_fetch_history_frames_returns_frames():
     assert frames[0]["cam_index"] == 0
     assert "1700000000" in frames[0]["url"]
     assert frames[0]["timestamp"] < frames[1]["timestamp"]
+
+
+def test_get_existing_frames_returns_empty_when_output_dir_missing():
+    """_get_existing_frames returns empty set when output_dir does not exist."""
+    from app.archiver import _get_existing_frames
+
+    existing = _get_existing_frames("/nonexistent/path/12345", "KSPB")
+    assert existing == set()
 
 
 def test_get_existing_frames_finds_history_files():
@@ -1161,6 +1282,134 @@ def test_save_history_image_creates_correct_structure():
         assert "KSPB" in path
         assert path.endswith("1700000000_0.jpg")
         assert "2023" in path and "11" in path
+
+
+def test_save_history_image_returns_none_on_oserror():
+    """save_history_image returns None when makedirs or write fails."""
+    from app.archiver import save_history_image
+
+    config = {"archive": {"output_dir": "/tmp"}}
+    data = b"\xff\xd8\xff"
+
+    with patch("app.archiver.os.makedirs", side_effect=OSError(13, "Permission denied")):
+        result = save_history_image(data, "KSPB", 0, 1700000000, config)
+
+    assert result is None
+
+
+def test_webcam_to_image_url_returns_absolute_url():
+    """_webcam_to_image_url converts relative URL using api_base."""
+    from app.archiver import _webcam_to_image_url
+
+    webcam = {"index": 0, "image_url": "/v1/airports/kspb/webcams/0/image"}
+    config = {
+        "source": {"airports_api_url": "https://api.example.com/v1/airports"},
+    }
+    url = _webcam_to_image_url(webcam, config)
+    assert url is not None
+    assert url.startswith("http")
+    assert "webcams/0/image" in url
+
+
+def test_webcam_to_image_url_returns_none_when_no_url_keys():
+    """_webcam_to_image_url returns None when webcam has no image URL keys."""
+    from app.archiver import _webcam_to_image_url
+
+    webcam = {"index": 0, "name": "Main Cam"}
+    config = {"source": {"airports_api_url": "https://api.example.com/v1/airports"}}
+    assert _webcam_to_image_url(webcam, config) is None
+
+
+def test_run_archive_skips_airport_with_no_code():
+    """run_archive skips airports that have no code/id/icao."""
+    from app.archiver import run_archive
+
+    config = {
+        "source": {
+            "base_url": "https://aviationwx.org",
+            "airports_api_url": "https://api.example.com/v1/airports",
+            "request_timeout": 5,
+            "max_retries": 1,
+            "retry_delay": 0,
+        },
+        "archive": {"output_dir": "/tmp", "retention_days": 0},
+        "airports": {"archive_all": True, "selected": []},
+    }
+
+    def mock_get(url, **kwargs):
+        resp = MagicMock()
+        resp.ok = True
+        resp.raise_for_status.return_value = None
+        if "airports" in url and "webcams" not in url:
+            resp.json.return_value = {
+                "airports": [
+                    {"code": "KSPB"},
+                    {"name": "No Code Airport"},  # No code, id, or icao
+                ],
+            }
+        elif "webcams" in url:
+            resp.json.return_value = {"webcams": []}
+            resp.text = '<html><img src="/cams/kspb/webcam_snapshot.jpg"></html>'
+        elif "airport=" in url:
+            resp.text = '<html><img src="/cams/kspb/webcam_snapshot.jpg"></html>'
+        else:
+            resp.headers = {"content-type": "image/jpeg"}
+            resp.content = b"\xff\xd8\xff"
+        return resp
+
+    with patch("app.archiver.requests.get", side_effect=mock_get):
+        stats = run_archive(config)
+
+    assert stats["airports_processed"] == 1
+    assert stats["errors"] == 0
+
+
+def test_run_archive_use_history_false_uses_current_only():
+    """run_archive with use_history_api=False uses current image only (no history API)."""
+    from app.archiver import run_archive
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {
+            "source": {
+                "base_url": "https://aviationwx.org",
+                "airports_api_url": "https://api.aviationwx.org/v1/airports",
+                "request_timeout": 30,
+                "max_retries": 1,
+                "retry_delay": 0,
+                "use_history_api": False,
+            },
+            "archive": {"output_dir": tmpdir, "retention_days": 0},
+            "airports": {"archive_all": False, "selected": ["KSPB"]},
+        }
+
+        def mock_get(url, **kwargs):
+            resp = MagicMock()
+            resp.ok = True
+            resp.raise_for_status.return_value = None
+            # Image download: URL ends with /image or has /image in path
+            if "/image" in url or url.endswith("image"):
+                resp.headers = {"content-type": "image/jpeg"}
+                resp.content = b"\xff\xd8\xff\xe0"
+            elif "airports" in url and "webcams" not in url:
+                resp.json.return_value = {
+                    "airports": [{"id": "kspb", "icao": "KSPB"}],
+                }
+            elif "webcams" in url:
+                resp.json.return_value = {
+                    "webcams": [{"image_url": "/v1/airports/kspb/webcams/0/image"}],
+                }
+            else:
+                resp.headers = {"content-type": "image/jpeg"}
+                resp.content = b"\xff\xd8\xff\xe0"
+            return resp
+
+        with patch("app.archiver.requests.get", side_effect=mock_get):
+            stats = run_archive(config)
+
+        assert stats["airports_processed"] == 1
+        assert stats["images_fetched"] >= 1
+        assert stats["images_saved"] >= 1
+        assert stats["errors"] == 0
 
 
 def test_run_archive_history_mode_downloads_missing_frames():
@@ -1325,6 +1574,227 @@ def test_apply_retention_returns_zero_when_output_dir_missing():
     )
 
 
+def test_apply_retention_by_size_no_deletion_when_under_limit():
+    """apply_retention with retention_max_gb does nothing when total size is under limit."""
+    from app.archiver import apply_retention
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # 1MB total, limit 10MB
+        fpath = os.path.join(tmpdir, "small.jpg")
+        with open(fpath, "wb") as fh:
+            fh.write(b"x" * (1024 * 1024))
+
+        config = {
+            "archive": {
+                "output_dir": tmpdir,
+                "retention_days": 0,
+                "retention_max_gb": 10,  # 10 GB - plenty of room
+            },
+        }
+        deleted = apply_retention(config)
+
+        assert deleted == 0
+        assert os.path.exists(fpath)
+
+
+def test_apply_retention_by_size_removes_oldest_first():
+    """apply_retention with retention_max_gb removes oldest files until under limit."""
+    import time
+
+    from app.archiver import apply_retention
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create 4 files of 1MB each = 4MB total, with distinct mtimes (oldest first)
+        for i in range(4):
+            fpath = os.path.join(tmpdir, f"file_{i}.jpg")
+            with open(fpath, "wb") as fh:
+                fh.write(b"x" * (1024 * 1024))
+            if i < 3:
+                time.sleep(0.01)  # Ensure distinct mtimes
+
+        # Limit to 2MB = ~0.002 GB; should remove 2 oldest files (file_0, file_1)
+        config = {
+            "archive": {
+                "output_dir": tmpdir,
+                "retention_days": 0,
+                "retention_max_gb": 0.002,  # ~2 MB
+            },
+        }
+        deleted = apply_retention(config)
+
+        assert deleted >= 2
+        remaining = sum(
+            os.path.getsize(os.path.join(tmpdir, f))
+            for f in os.listdir(tmpdir)
+        )
+        assert remaining <= 2.5 * 1024 * 1024  # Allow small tolerance
+        # Oldest (file_0) must be gone; newest (file_3) must remain
+        assert not os.path.exists(os.path.join(tmpdir, "file_0.jpg"))
+        assert os.path.exists(os.path.join(tmpdir, "file_3.jpg"))
+
+
+def test_apply_retention_by_size_works_with_nested_archive_structure():
+    """apply_retention by size works with YYYY/MM/DD/AIRPORT/ directory structure."""
+    import time
+
+    from app.archiver import apply_retention
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Mimic archive layout: 2024/01/15/KSPB/file.jpg
+        archive_path = os.path.join(tmpdir, "2024", "01", "15", "KSPB")
+        os.makedirs(archive_path, exist_ok=True)
+        for i in range(3):
+            fpath = os.path.join(archive_path, f"frame_{i}.jpg")
+            with open(fpath, "wb") as fh:
+                fh.write(b"x" * (1024 * 1024))  # 1MB each
+            if i < 2:
+                time.sleep(0.01)
+
+        config = {
+            "archive": {
+                "output_dir": tmpdir,
+                "retention_days": 0,
+                "retention_max_gb": 0.001,  # ~1 MB - keep only 1 file
+            },
+        }
+        deleted = apply_retention(config)
+
+        assert deleted >= 2
+        remaining_files = [
+            f for f in os.listdir(archive_path) if f.endswith(".jpg")
+        ]
+        assert len(remaining_files) <= 1
+        # Newest (frame_2) should remain
+        assert os.path.exists(os.path.join(archive_path, "frame_2.jpg"))
+
+
+def test_apply_retention_max_gb_zero_disabled():
+    """retention_max_gb=0 with retention_days=0 means no retention (no deletion)."""
+    from app.archiver import apply_retention
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fpath = os.path.join(tmpdir, "test.jpg")
+        with open(fpath, "wb") as fh:
+            fh.write(b"x" * (10 * 1024 * 1024))  # 10MB
+
+        config = {
+            "archive": {
+                "output_dir": tmpdir,
+                "retention_days": 0,
+                "retention_max_gb": 0,
+            },
+        }
+        deleted = apply_retention(config)
+
+        assert deleted == 0
+        assert os.path.exists(fpath)
+
+
+def test_apply_retention_max_gb_string_parsed():
+    """apply_retention accepts retention_max_gb as string (e.g. from YAML)."""
+    import time
+
+    from app.archiver import apply_retention
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for i in range(2):
+            fpath = os.path.join(tmpdir, f"file_{i}.jpg")
+            with open(fpath, "wb") as fh:
+                fh.write(b"x" * (1024 * 1024))
+            if i < 1:
+                time.sleep(0.01)
+
+        config = {
+            "archive": {
+                "output_dir": tmpdir,
+                "retention_days": 0,
+                "retention_max_gb": "0.0005",  # String ~0.5 MB
+            },
+        }
+        deleted = apply_retention(config)
+
+        assert deleted >= 1
+        assert not os.path.exists(os.path.join(tmpdir, "file_0.jpg"))
+
+
+def test_apply_retention_by_days_and_size_both_applied():
+    """apply_retention applies both retention_days and retention_max_gb when set."""
+    import time
+
+    from app.archiver import apply_retention
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # One old file, two recent
+        old_path = os.path.join(tmpdir, "old.jpg")
+        with open(old_path, "wb") as fh:
+            fh.write(b"x" * 1000)
+        old_mtime = time.time() - (3 * 86400)
+        os.utime(old_path, (old_mtime, old_mtime))
+
+        for i in range(2):
+            fpath = os.path.join(tmpdir, f"new_{i}.jpg")
+            with open(fpath, "wb") as fh:
+                fh.write(b"x" * 1000)
+
+        config = {
+            "archive": {
+                "output_dir": tmpdir,
+                "retention_days": 2,
+                "retention_max_gb": 0.000001,  # ~1KB - will remove all
+            },
+        }
+        deleted = apply_retention(config)
+
+        assert deleted >= 1
+        assert not os.path.exists(old_path)
+
+
+def test_run_archive_applies_retention_including_max_gb():
+    """run_archive calls apply_retention with config including retention_max_gb."""
+    from app.archiver import apply_retention, run_archive
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {
+            "source": {
+                "base_url": "https://aviationwx.org",
+                "airports_api_url": "https://api.example.com/v1/airports",
+                "request_timeout": 5,
+                "max_retries": 1,
+                "retry_delay": 0,
+            },
+            "archive": {
+                "output_dir": tmpdir,
+                "retention_days": 7,
+                "retention_max_gb": 50,
+            },
+            "airports": {"archive_all": False, "selected": ["KSPB"]},
+        }
+
+        def mock_get(url, **kwargs):
+            resp = MagicMock()
+            resp.ok = True
+            resp.raise_for_status.return_value = None
+            if "airports" in url and "webcams" not in url:
+                resp.json.return_value = {"airports": [{"code": "KSPB"}]}
+            elif "webcams" in url:
+                resp.json.return_value = {"webcams": []}
+                resp.text = "<html></html>"
+            else:
+                resp.headers = {"content-type": "image/jpeg"}
+                resp.content = b"\xff\xd8\xff"
+            return resp
+
+        with patch("app.archiver.requests.get", side_effect=mock_get):
+            with patch("app.archiver.apply_retention") as mock_retention:
+                mock_retention.return_value = 0
+                run_archive(config)
+
+        mock_retention.assert_called_once()
+        call_config = mock_retention.call_args[0][0]
+        assert call_config["archive"]["retention_max_gb"] == 50
+        assert call_config["archive"]["retention_days"] == 7
+
+
 def test_apply_retention_logs_warning_on_remove_failure():
     """apply_retention logs warning when file removal fails."""
     from app.archiver import apply_retention
@@ -1379,10 +1849,14 @@ def test_disk_usage_included_when_output_dir_exists():
         stats = _archive_stats(tmpdir)
     assert "disk_usage" in stats
     assert stats["disk_usage"] is not None
-    assert "used_gb" in stats["disk_usage"]
-    assert "total_gb" in stats["disk_usage"]
-    assert "free_gb" in stats["disk_usage"]
-    assert "percent_used" in stats["disk_usage"]
+    du = stats["disk_usage"]
+    assert "used_gb" in du
+    assert "total_gb" in du
+    assert "free_gb" in du
+    assert "percent_used" in du
+    assert "used_fmt" in du
+    assert "total_fmt" in du
+    assert "unit" in du
 
 
 def test_dashboard_returns_200(flask_client):
@@ -1399,9 +1873,12 @@ def test_api_status_returns_json(flask_client):
     assert "run_count" in data
     assert "archive" in data
     if data.get("disk_usage"):
-        assert "used_gb" in data["disk_usage"]
-        assert "total_gb" in data["disk_usage"]
-        assert "free_gb" in data["disk_usage"]
+        du = data["disk_usage"]
+        assert "used_gb" in du
+        assert "total_gb" in du
+        assert "free_gb" in du
+        assert "used_fmt" in du
+        assert "unit" in du
 
 
 def test_browse_returns_200(flask_client):
