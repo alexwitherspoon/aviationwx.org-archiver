@@ -20,6 +20,8 @@ from app.config import save_config, validate_config
 from app.constants import (
     BYTES_PER_GIB,
     BYTES_PER_MIB,
+    BYTES_PER_PIB,
+    BYTES_PER_TIB,
     DEFAULT_INTERVAL_MINUTES,
     DEFAULT_LOG_DISPLAY_COUNT,
     PERCENT_SCALE,
@@ -78,11 +80,47 @@ def _archive_tree(output_dir: str) -> dict:
     return tree
 
 
+def _format_size_in_unit(bytes_val: int, unit: str) -> float:
+    """
+    Convert bytes to the given unit (GB/TB/PB).
+
+    Args:
+        bytes_val: Size in bytes.
+        unit: Target unit: "GB", "TB", or "PB".
+
+    Returns:
+        Size in the target unit, rounded to 2 decimal places.
+    """
+    if unit == "PB":
+        return round(bytes_val / BYTES_PER_PIB, 2)
+    if unit == "TB":
+        return round(bytes_val / BYTES_PER_TIB, 2)
+    return round(bytes_val / BYTES_PER_GIB, 2)
+
+
+def _pick_display_unit(total_bytes: int) -> str:
+    """
+    Pick GB, TB, or PB based on total size.
+
+    Args:
+        total_bytes: Total disk size in bytes.
+
+    Returns:
+        "PB" if >= 1 PiB, "TB" if >= 1 TiB, else "GB".
+    """
+    if total_bytes >= BYTES_PER_PIB:
+        return "PB"
+    if total_bytes >= BYTES_PER_TIB:
+        return "TB"
+    return "GB"
+
+
 def _disk_usage(path: str) -> dict | None:
     """
     Return disk usage for the filesystem containing path.
 
-    Returns dict with used_gb, total_gb, free_gb, percent_used, or None on error.
+    Returns dict with used_gb, total_gb, free_gb, percent_used (raw),
+    and used_fmt, free_fmt, total_fmt, unit (human-readable), or None on error.
     """
     try:
         usage = shutil.disk_usage(path)
@@ -90,13 +128,24 @@ def _disk_usage(path: str) -> dict | None:
         used_gb = usage.used / BYTES_PER_GIB
         free_gb = usage.free / BYTES_PER_GIB
         percent = (usage.used / usage.total * PERCENT_SCALE) if usage.total else 0
+
+        unit = _pick_display_unit(usage.total)
+        used_val = _format_size_in_unit(usage.used, unit)
+        free_val = _format_size_in_unit(usage.free, unit)
+        total_val = _format_size_in_unit(usage.total, unit)
+
         return {
             "used_gb": round(used_gb, 2),
             "total_gb": round(total_gb, 2),
             "free_gb": round(free_gb, 2),
             "percent_used": round(percent, 1),
+            "used_fmt": f"{used_val:,.2f}",
+            "free_fmt": f"{free_val:,.2f}",
+            "total_fmt": f"{total_val:,.2f}",
+            "unit": unit,
         }
-    except OSError:
+    except OSError as exc:
+        logger.debug("Disk usage failed for %s: %s", path, exc)
         return None
 
 
@@ -124,8 +173,8 @@ def _archive_stats(output_dir: str) -> dict:
                 parts = fpath.replace(output_dir, "").strip(os.sep).split(os.sep)
                 if len(parts) >= 2:
                     airports.add(parts[-2])
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug("Could not stat %s: %s", fpath, exc)
 
     return {
         "total_files": total_files,
@@ -187,6 +236,9 @@ def configuration():
                 error = "Failed to save configuration. Check server logs."
         except ValueError as exc:
             error = f"Invalid configuration: {exc}"
+        except (KeyError, TypeError) as exc:
+            logger.warning("Configuration form error: %s", exc, exc_info=True)
+            error = "Invalid form data. Check that all required fields are present."
 
     config_errors = validate_config(config)
     return render_template(
@@ -262,6 +314,15 @@ def _form_to_config(form, existing_config: dict) -> dict:
     if retention < 0:
         raise ValueError("retention_days must be >= 0")
     config["archive"]["retention_days"] = retention
+
+    retention_max = form.get("retention_max_gb", "0").strip()
+    try:
+        retention_max_gb = float(retention_max) if retention_max else 0.0
+    except ValueError:
+        retention_max_gb = 0.0
+    if retention_max_gb < 0:
+        raise ValueError("retention_max_gb must be >= 0")
+    config["archive"]["retention_max_gb"] = retention_max_gb
 
     # Airports
     config["airports"]["archive_all"] = "archive_all" in form

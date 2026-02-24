@@ -13,7 +13,8 @@ archive:
   # Layout: output_dir/YYYY/MM/DD/AIRPORT/filename
 
   # Retention days (0 = unlimited)
-  retention_days: 0
+  retention_days: 0      # Days to keep (0 = unlimited)
+  retention_max_gb: 0    # Max archive size in GB, oldest removed first (0 = unlimited)
 
 # ============================================================
 # Fetch Schedule

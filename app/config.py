@@ -23,6 +23,7 @@ DEFAULT_CONFIG = {
     "archive": {
         "output_dir": "/archive",
         "retention_days": 0,
+        "retention_max_gb": 0,
     },
     "schedule": {
         "interval_minutes": DEFAULT_INTERVAL_MINUTES,
@@ -62,6 +63,7 @@ _DEFAULT_CONFIG_PATH = "/config/config.yaml"
 _ENV_TO_CONFIG: list[tuple[str, tuple[str, ...], str | type]] = [
     ("ARCHIVER_ARCHIVE_OUTPUT_DIR", ("archive", "output_dir"), str),
     ("ARCHIVER_ARCHIVE_RETENTION_DAYS", ("archive", "retention_days"), int),
+    ("ARCHIVER_ARCHIVE_RETENTION_MAX_GB", ("archive", "retention_max_gb"), "float"),
     ("ARCHIVER_SCHEDULE_INTERVAL_MINUTES", ("schedule", "interval_minutes"), int),
     ("ARCHIVER_SCHEDULE_FETCH_ON_START", ("schedule", "fetch_on_start"), bool),
     ("ARCHIVER_SCHEDULE_JOB_TIMEOUT_MINUTES", ("schedule", "job_timeout_minutes"), int),
@@ -165,6 +167,7 @@ def load_config(config_path: str | None = None) -> dict:
             with open(path, "r", encoding="utf-8") as fh:
                 user_config = yaml.safe_load(fh) or {}
             config = _deep_merge(DEFAULT_CONFIG, user_config)
+            logger.debug("Merged config from %s (%d top-level keys)", path, len(config))
             logger.info("Configuration loaded from %s", path)
         except yaml.YAMLError as exc:
             logger.error("Failed to parse config file %s: %s", path, exc)
@@ -209,6 +212,17 @@ def validate_config(config: dict) -> list[str]:
     if not output_dir:
         errors.append("Archive output directory must not be empty.")
 
+    source = config.get("source", {})
+    if not (source.get("airports_api_url") or "").strip():
+        errors.append(
+            "Source API URL (source.airports_api_url) must not be empty. "
+            "Check configuration."
+        )
+
+    if errors:
+        logger.debug("Config validation failed: %s", "; ".join(errors))
+    else:
+        logger.debug("Config validation passed.")
     return errors
 
 
@@ -297,6 +311,7 @@ def save_config(config: dict, config_path: str | None = None) -> bool:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             yaml.safe_dump(config, fh, default_flow_style=False, sort_keys=False)
+        logger.debug("Wrote config to %s (%d top-level keys)", path, len(config))
         logger.info("Configuration saved to %s", path)
         return True
     except OSError as exc:

@@ -8,9 +8,38 @@ Centralizes magic numbers for clarity and maintainability.
 SECONDS_PER_MINUTE = 60
 SECONDS_PER_DAY = 86400
 
-# Bytes / units
+# Bytes / units (binary: MiB, GiB, TiB, PiB)
 BYTES_PER_MIB = 1024 * 1024
 BYTES_PER_GIB = 1024**3
+BYTES_PER_TIB = 1024**4
+BYTES_PER_PIB = 1024**5
+
+
+def parse_storage_gb(value):  # str | int | float -> float
+    """
+    Parse storage limit from user input.
+
+    Accepts: "10", "10.5", "100" (GB), "1TB" or "1 TB" (converted to GB).
+    Returns value in GB. 0 or invalid = disabled.
+    """
+    if value is None or value == "":
+        return 0.0
+    s = str(value).strip().upper()
+    if not s:
+        return 0.0
+    # Handle "1TB", "1 TB", "500GB" etc.
+    if "TB" in s:
+        try:
+            num = float(s.replace("TB", "").replace(" ", "").strip())
+            return max(0.0, num * 1024)  # TB -> GB
+        except ValueError:
+            return 0.0
+    if "GB" in s:
+        s = s.replace("GB", "").replace(" ", "").strip()
+    try:
+        return max(0.0, float(s))
+    except ValueError:
+        return 0.0
 
 # Percent scale (0-100)
 PERCENT_SCALE = 100

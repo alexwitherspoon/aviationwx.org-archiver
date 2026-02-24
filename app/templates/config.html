@@ -57,10 +57,18 @@
         <small style="color:var(--text-muted)">Docker: bind-mount host ./archive here to persist data.</small>
       </div>
       <div>
-        <label for="retention_days">Retention (days, 0 = unlimited)</label>
+        <label for="retention_days">Retention by age (days, 0 = unlimited)</label>
         <input type="number" id="retention_days" name="retention_days"
                min="0"
                value="{{ config.archive.retention_days }}">
+      </div>
+      <div>
+        <label for="retention_max_gb">Retention by size (max GB, 0 = unlimited)</label>
+        <input type="number" id="retention_max_gb" name="retention_max_gb"
+               min="0" step="0.1"
+               value="{{ config.archive.get('retention_max_gb', 0) }}"
+               placeholder="e.g. 100 for 100GB, 1024 for 1TB">
+        <small style="color:var(--text-muted)">Oldest files removed first when over limit.</small>
       </div>
     </div>
   </div>

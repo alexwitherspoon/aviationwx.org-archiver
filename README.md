@@ -64,6 +64,7 @@ Key settings:
 |---------|---------|-------------|
 | `archive.output_dir` | `/archive` | Where images are saved inside the container |
 | `archive.retention_days` | `0` | Days to keep files (0 = unlimited) |
+| `archive.retention_max_gb` | `0` | Max archive size in GB; oldest files removed first (0 = unlimited) |
 | `schedule.interval_minutes` | `15` | How often to fetch new images |
 | `schedule.fetch_on_start` | `true` | Run an immediate fetch on container start |
 | `schedule.job_timeout_minutes` | `30` | Max minutes per run; next run resumes from where it stopped |
@@ -84,6 +85,7 @@ Any config setting can be overridden via `ARCHIVER_*` environment variables. Env
 |---------|---------|---------|
 | `ARCHIVER_ARCHIVE_OUTPUT_DIR` | `archive.output_dir` | `/archive` |
 | `ARCHIVER_ARCHIVE_RETENTION_DAYS` | `archive.retention_days` | `30` |
+| `ARCHIVER_ARCHIVE_RETENTION_MAX_GB` | `archive.retention_max_gb` | `100` |
 | `ARCHIVER_SCHEDULE_INTERVAL_MINUTES` | `schedule.interval_minutes` | `15` |
 | `ARCHIVER_SCHEDULE_FETCH_ON_START` | `schedule.fetch_on_start` | `true` |
 | `ARCHIVER_SOURCE_API_KEY` | `source.api_key` | `your-key` |

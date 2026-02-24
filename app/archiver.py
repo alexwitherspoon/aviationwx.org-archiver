@@ -18,6 +18,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 from app.constants import (
+    BYTES_PER_GIB,
     DEFAULT_REQUEST_DELAY_SECONDS,
     MD5_READ_CHUNK_SIZE,
     SECONDS_PER_DAY,
@@ -74,9 +75,20 @@ def fetch_airport_list(config: dict) -> list[dict]:
             data = resp.json()
             # API returns {"airports": [...]} or a bare list
             if isinstance(data, list):
+                logger.debug("Fetched %d airports from API (bare list)", len(data))
                 return data
             if isinstance(data, dict):
-                return data.get("airports", data.get("data", []))
+                airports = data.get("airports", data.get("data", []))
+                if isinstance(airports, list):
+                    logger.debug(
+                        "Fetched %d airports from API (dict response)", len(airports)
+                    )
+                    return airports
+                logger.debug(
+                    "Airports API returned non-list (got %s)",
+                    type(airports).__name__,
+                )
+                return []
         except requests.RequestException as exc:
             logger.warning(
                 "Attempt %d/%d: failed to fetch airport list from %s: %s",
@@ -108,6 +120,10 @@ def select_airports(all_airports: list[dict], config: dict) -> list[dict]:
     Otherwise only airports whose code appears in ``airports.selected`` are kept.
     """
     if config["airports"].get("archive_all", False):
+        logger.debug(
+            "Selected all %d airports (archive_all=true)",
+            len(all_airports),
+        )
         return all_airports
 
     selected_codes = {c.upper() for c in config["airports"].get("selected", [])}
@@ -126,6 +142,12 @@ def select_airports(all_airports: list[dict], config: dict) -> list[dict]:
             ", ".join(sorted(missing)),
         )
 
+    logger.debug(
+        "Selected %d of %d airports: %s",
+        len(filtered),
+        len(all_airports),
+        ", ".join(sorted(found_codes)) if found_codes else "(none)",
+    )
     return filtered
 
 
@@ -167,6 +189,10 @@ def fetch_image_urls(airport: dict, config: dict) -> list[str]:
                 if urls:
                     logger.debug("Found %d image(s) for %s via API", len(urls), code)
                     return urls
+                logger.debug(
+                    "Webcam API returned data but no image URLs for %s",
+                    code,
+                )
         else:
             logger.debug(
                 "Webcam API %s returned %s for %s",
@@ -189,6 +215,14 @@ def fetch_image_urls(airport: dict, config: dict) -> list[str]:
                     "Found %d image(s) for %s via page scrape", len(urls), code
                 )
                 return urls
+            logger.debug("Page scrape found 0 image URLs for %s", code)
+        else:
+            logger.debug(
+                "Airport page %s returned %s for %s",
+                page_url,
+                resp.status_code,
+                code,
+            )
     except requests.RequestException as exc:
         logger.warning("Failed to fetch airport page for %s: %s", code, exc)
 
@@ -244,11 +278,31 @@ def _fetch_webcams_list(airport: dict, config: dict) -> list[dict]:
         _rate_limit(config)
         resp = requests.get(webcam_api, timeout=timeout, headers=_api_headers(config))
         if not resp.ok:
+            logger.debug(
+                "Webcams API %s returned %s for %s",
+                webcam_api,
+                resp.status_code,
+                code,
+            )
             return []
         data = resp.json()
         webcams = data.get("webcams", data.get("data", []))
-        return webcams if isinstance(webcams, list) else []
-    except (requests.RequestException, json.JSONDecodeError):
+        if not isinstance(webcams, list):
+            logger.debug(
+                "Webcams API returned non-list for %s (got %s)",
+                code,
+                type(webcams).__name__,
+            )
+            return []
+        if not webcams:
+            logger.debug("Webcams API returned empty list for %s", code)
+            return []
+        return webcams
+    except requests.RequestException as exc:
+        logger.debug("Webcams API request failed for %s: %s", code, exc)
+        return []
+    except json.JSONDecodeError as exc:
+        logger.debug("Webcams API invalid JSON for %s: %s", code, exc)
         return []
 
 
@@ -263,6 +317,12 @@ def fetch_history_frames(airport_code: str, webcam: dict, config: dict) -> list[
     cam_index = webcam.get("index", 0)
     history_url = webcam.get("history_url") if webcam.get("history_enabled") else None
     if not history_url:
+        logger.debug(
+            "Skipping %s cam %s: no history_url (history_enabled=%s)",
+            airport_code,
+            cam_index,
+            webcam.get("history_enabled"),
+        )
         return []
 
     api_url = config["source"]["airports_api_url"]
@@ -287,6 +347,18 @@ def fetch_history_frames(airport_code: str, webcam: dict, config: dict) -> list[
         data = resp.json()
         frames = data.get("frames", [])
         if not isinstance(frames, list):
+            logger.debug(
+                "History API returned non-list frames for %s cam %s",
+                airport_code,
+                cam_index,
+            )
+            return []
+        if not frames:
+            logger.debug(
+                "History API returned empty frames for %s cam %s",
+                airport_code,
+                cam_index,
+            )
             return []
 
         result = []
@@ -323,6 +395,11 @@ def _get_existing_frames(output_dir: str, airport_code: str) -> set[tuple[int, i
     existing: set[tuple[int, int]] = set()
     airport_upper = airport_code.upper()
     if not os.path.isdir(output_dir):
+        logger.debug(
+            "Output dir %s missing; no existing frames for %s",
+            output_dir,
+            airport_code,
+        )
         return existing
 
     for root, _dirs, files in os.walk(output_dir):
@@ -345,6 +422,7 @@ def _get_existing_frames(output_dir: str, airport_code: str) -> set[tuple[int, i
                 existing.add((ts, cam))
             except ValueError:
                 continue
+    logger.debug("Found %d existing frames for %s", len(existing), airport_code)
     return existing
 
 
@@ -442,6 +520,7 @@ def download_image(url: str, config: dict) -> bytes | None:
                     content_type,
                 )
                 return None
+            logger.debug("Downloaded %d bytes from %s", len(resp.content), url)
             return resp.content
         except requests.RequestException as exc:
             logger.warning(
@@ -585,14 +664,53 @@ def _file_md5(path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _collect_archive_files(output_dir: str) -> list[tuple[str, float, int]]:
+    """
+    Walk archive directory and return list of (path, mtime, size) for all files.
+
+    Used for retention by size (oldest-first deletion).
+    """
+    result: list[tuple[str, float, int]] = []
+    for root, _dirs, files in os.walk(output_dir):
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            try:
+                stat = os.stat(fpath)
+                result.append((fpath, stat.st_mtime, stat.st_size))
+            except OSError as exc:
+                logger.debug("Retention: could not stat %s: %s", fpath, exc)
+    return result
+
+
 def apply_retention(config: dict) -> int:
     """
-    Delete archived files older than ``archive.retention_days``.
+    Delete archived files based on retention rules.
+
+    Supports:
+    - ``archive.retention_days``: Delete files older than N days (0 = disabled).
+    - ``archive.retention_max_gb``: Keep total size under N GB by deleting
+      oldest files first (0 = disabled).
+
+    Both can be used together; each rule is applied independently.
 
     Returns the number of files deleted.
     """
     retention_days = config["archive"].get("retention_days", 0)
-    if retention_days <= 0:
+    retention_max_gb = config["archive"].get("retention_max_gb", 0)
+    if isinstance(retention_max_gb, str):
+        from app.constants import parse_storage_gb
+
+        retention_max_gb = parse_storage_gb(retention_max_gb)
+    retention_max_bytes = (
+        int(retention_max_gb * BYTES_PER_GIB) if retention_max_gb > 0 else 0
+    )
+
+    if retention_days <= 0 and retention_max_bytes <= 0:
+        logger.debug(
+            "Retention disabled (retention_days=%s, retention_max_gb=%s)",
+            retention_days,
+            retention_max_gb,
+        )
         return 0
 
     output_dir = config["archive"]["output_dir"]
@@ -604,25 +722,60 @@ def apply_retention(config: dict) -> int:
         )
         return 0
 
-    cutoff = datetime.now(timezone.utc).timestamp() - (retention_days * SECONDS_PER_DAY)
     deleted = 0
 
-    for root, _dirs, files in os.walk(output_dir):
-        for fname in files:
-            fpath = os.path.join(root, fname)
-            try:
-                if os.path.getmtime(fpath) < cutoff:
+    # Phase 1: Delete by age
+    if retention_days > 0:
+        cutoff = datetime.now(timezone.utc).timestamp() - (
+            retention_days * SECONDS_PER_DAY
+        )
+        logger.debug(
+            "Retention: scanning by age (cutoff %d days, before %s)",
+            retention_days,
+            datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat(),
+        )
+        for root, _dirs, files in os.walk(output_dir):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                try:
+                    if os.path.getmtime(fpath) < cutoff:
+                        os.remove(fpath)
+                        deleted += 1
+                except OSError as exc:
+                    logger.warning("Retention: failed to remove %s: %s", fpath, exc)
+
+    # Phase 2: Delete by size (oldest first) until under limit
+    if retention_max_bytes > 0:
+        files_sorted = _collect_archive_files(output_dir)
+        files_sorted.sort(key=lambda x: x[1])  # mtime ascending (oldest first)
+        total_bytes = sum(s for _, _, s in files_sorted)
+        to_remove = total_bytes - retention_max_bytes
+
+        if to_remove > 0:
+            logger.debug(
+                "Retention: total %.1f GB exceeds max %.1f GB; removing oldest",
+                total_bytes / BYTES_PER_GIB,
+                retention_max_bytes / BYTES_PER_GIB,
+            )
+            removed_bytes = 0
+            for fpath, _mtime, size in files_sorted:
+                if removed_bytes >= to_remove:
+                    break
+                try:
                     os.remove(fpath)
                     deleted += 1
-            except OSError as exc:
-                logger.warning("Retention: failed to remove %s: %s", fpath, exc)
+                    removed_bytes += size
+                except OSError as exc:
+                    logger.warning("Retention: failed to remove %s: %s", fpath, exc)
 
     if deleted:
-        logger.info(
-            "Retention cleanup: deleted %d file(s) older than %d days.",
-            deleted,
-            retention_days,
-        )
+        reasons = []
+        if retention_days > 0:
+            reasons.append(f"older than {retention_days} days")
+        if retention_max_bytes > 0:
+            reasons.append(f"over {retention_max_gb} GB limit")
+        suffix = " (" + "; ".join(reasons) + ")" if reasons else ""
+        logger.info("Retention cleanup: deleted %d file(s)%s.", deleted, suffix)
 
     return deleted
 
@@ -652,6 +805,12 @@ def _run_archive_history(
 
     output_dir = config["archive"]["output_dir"]
     existing = _get_existing_frames(output_dir, code)
+    logger.debug(
+        "Processing %s: %d webcams, %d existing frames",
+        code,
+        len(webcams),
+        len(existing),
+    )
     run_ts = datetime.now(timezone.utc)
 
     for webcam in webcams:
@@ -678,7 +837,13 @@ def _run_archive_history(
                     existing.add((ts, cam_index))
         else:
             url = _webcam_to_image_url(webcam, config)
-            if url:
+            if not url:
+                logger.debug(
+                    "Skipping %s cam %s: no image_url/url/src in webcam data",
+                    code,
+                    webcam.get("index", 0),
+                )
+            elif url:
                 stats["images_fetched"] += 1
                 image_data = download_image(url, config)
                 if image_data is not None:
@@ -697,6 +862,8 @@ def _run_archive_current_only(
 ) -> None:
     """Archive using current image only (legacy behavior)."""
     image_urls = fetch_image_urls(airport, config)
+    if not image_urls:
+        logger.debug("No image URLs for %s (current-only mode)", code)
 
     for url in image_urls:
         stats["images_fetched"] += 1
@@ -736,6 +903,16 @@ def run_archive(
     logger.info("Starting archive run...")
     run_ts = datetime.now(timezone.utc)
 
+    # Defensive: ensure required config structure exists (avoids KeyError on
+    # malformed config)
+    try:
+        _ = config["source"]["airports_api_url"]
+        _ = config["archive"]["output_dir"]
+    except (KeyError, TypeError) as exc:
+        logger.error("Invalid config structure (missing source or archive): %s", exc)
+        stats["errors"] += 1
+        return stats
+
     all_airports = fetch_airport_list(config)
     if not all_airports:
         logger.warning("No airports returned from API; skipping run.")
@@ -753,8 +930,14 @@ def run_archive(
         return stats
 
     use_history = config.get("source", {}).get("use_history_api", True)
+    logger.debug(
+        "Archive run: use_history=%s, deadline=%s",
+        use_history,
+        "yes" if deadline else "no",
+    )
 
-    for airport in airports:
+    total_airports = len(airports)
+    for idx, airport in enumerate(airports, start=1):
         if deadline is not None and time.time() >= deadline:
             logger.info(
                 "Job stopped after %d min; next run will resume. "
@@ -772,6 +955,15 @@ def run_archive(
             continue
 
         stats["airports_processed"] += 1
+        fetched_before = stats["images_fetched"]
+        saved_before = stats["images_saved"]
+
+        logger.info(
+            "Archiving %s (airport %d/%d)...",
+            code,
+            idx,
+            total_airports,
+        )
 
         if use_history:
             try:
@@ -791,6 +983,15 @@ def run_archive(
             except Exception as exc:
                 logger.error("Error archiving images for %s: %s", code, exc)
                 stats["errors"] += 1
+
+        delta_fetched = stats["images_fetched"] - fetched_before
+        delta_saved = stats["images_saved"] - saved_before
+        logger.info(
+            "%s complete: %d fetched, %d saved",
+            code,
+            delta_fetched,
+            delta_saved,
+        )
 
     apply_retention(config)
     logger.info(
