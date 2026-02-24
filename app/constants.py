@@ -41,6 +41,7 @@ def parse_storage_gb(value):  # str | int | float -> float
     except ValueError:
         return 0.0
 
+
 # Percent scale (0-100)
 PERCENT_SCALE = 100
 

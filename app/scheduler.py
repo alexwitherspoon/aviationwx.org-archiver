@@ -50,10 +50,7 @@ def _append_log(message: str, level: str = "INFO") -> None:
         _state["log_entries"].append(entry)
         _state["_log_bytes"] = _state.get("_log_bytes", 0) + entry_bytes
 
-        while (
-            _state["_log_bytes"] > _MAX_LOG_BYTES
-            and len(_state["log_entries"]) > 1
-        ):
+        while _state["_log_bytes"] > _MAX_LOG_BYTES and len(_state["log_entries"]) > 1:
             removed = _state["log_entries"].pop(0)
             _state["_log_bytes"] -= len(json.dumps(removed))
 
