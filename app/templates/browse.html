@@ -17,7 +17,10 @@
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:12px;">
     <div>
       <h2 style="margin-bottom:4px;">Preview</h2>
-      <p id="preview-filename" style="color:var(--text-muted); font-size:12px;"></p>
+      <p style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; color:var(--text-muted); font-size:12px;">
+        <span id="preview-filename"></span>
+        <span id="preview-timestamp" style="color:var(--accent);"></span>
+      </p>
     </div>
     <div style="display:flex; flex-wrap:wrap; align-items:center; gap:12px;">
       <div id="preview-nav" style="display:none; align-items:center; gap:12px;">
@@ -127,6 +130,7 @@
   const panel = document.getElementById('preview-panel');
   const img = document.getElementById('preview-image');
   const filenameEl = document.getElementById('preview-filename');
+  const timestampEl = document.getElementById('preview-timestamp');
   const nonImageEl = document.getElementById('preview-non-image');
   const downloadBtn = document.getElementById('preview-download-btn');
   const navEl = document.getElementById('preview-nav');
@@ -139,8 +143,29 @@
   let basePath = "{{ url_for('serve_archive_file', subpath='') }}";
   if (basePath && !basePath.endsWith('/')) basePath += '/';
 
+  function parseTimestampFromFilename(filename) {
+    const base = filename.replace(/\.[^.]+$/, '');
+    const parts = base.split('_');
+    if (parts.length >= 2) {
+      const first = parts[0];
+      if (/^\d{10,}$/.test(first)) {
+        const d = new Date(parseInt(first, 10) * 1000);
+        return d.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
+      }
+      if (/^\d{8}$/.test(first) && /^\d{6}$/.test(parts[1])) {
+        const y = first.slice(0, 4), m = first.slice(4, 6), d = first.slice(6, 8);
+        const h = parts[1].slice(0, 2), min = parts[1].slice(2, 4), s = parts[1].slice(4, 6);
+        return y + '-' + m + '-' + d + ' ' + h + ':' + min + ':' + s + ' UTC';
+      }
+    }
+    return null;
+  }
+
   function showImage(url, filename, isImage) {
     filenameEl.textContent = filename;
+    const ts = parseTimestampFromFilename(filename);
+    timestampEl.textContent = ts ? ts : '';
+    timestampEl.style.display = ts ? 'inline' : 'none';
     downloadBtn.href = url;
     downloadBtn.download = filename;
     if (isImage) {
