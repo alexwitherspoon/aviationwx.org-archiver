@@ -1706,9 +1706,10 @@ def run_archive(
         total_airports = len(airports)
         for idx, airport in enumerate(airports, start=1):
             if deadline is not None and time.time() >= deadline:
+                elapsed_min = (time.time() - run_ts.timestamp()) / 60
                 logger.info(
-                    "Job stopped after %d min; next run will resume.",
-                    timeout_min,
+                    "Job stopped after %.1f min; next run will resume.",
+                    elapsed_min,
                 )
                 stats["timed_out"] = True
                 break

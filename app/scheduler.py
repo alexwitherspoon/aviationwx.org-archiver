@@ -7,6 +7,7 @@ Runs archive passes on a configurable interval using APScheduler.
 import json
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -25,12 +26,13 @@ _state = {
     "last_stats": None,  # dict | None
     "next_run": None,  # datetime | None
     "running": False,  # bool — True while a run is in progress
+    "_running_since": None,  # float | None — time.time() when run started
     "run_count": 0,  # int — total number of completed runs
     "log_entries": [],  # list[dict] — recent log entries for the web GUI
     "_log_bytes": 0,  # internal: approximate byte size of log_entries
 }
 
-_MAX_LOG_BYTES = 10 * 1024 * 1024  # 10 MB
+_MAX_LOG_BYTES = 500 * 1024  # 500 KB
 
 
 def get_state() -> dict:
@@ -86,21 +88,44 @@ def _archive_job(config: dict) -> None:
             _append_log(f"Config error: {err}", "WARNING")
         return
 
+    interval_minutes = max(
+        1,
+        config["schedule"].get("interval_minutes", DEFAULT_INTERVAL_MINUTES),
+    )
+    # Stale threshold: 2x interval — if running longer, assume previous run died
+    stale_threshold_seconds = interval_minutes * 2 * 60
+
     with _state_lock:
         if _state["running"]:
-            logger.warning("Archive run skipped — previous run still in progress.")
-            return
+            running_since = _state.get("_running_since")
+            elapsed = time.time() - running_since if running_since else 0
+            if running_since is not None and elapsed > stale_threshold_seconds:
+                logger.warning(
+                    "Previous run appears stuck (%.0f min) — clearing lock.",
+                    elapsed / 60,
+                )
+                _append_log(
+                    "Previous run appears stuck — clearing lock and starting new run.",
+                    "WARNING",
+                )
+                _state["running"] = False
+                _state["_running_since"] = None
+            else:
+                logger.warning("Archive run skipped — previous run still in progress.")
+                return
         _state["running"] = True
+        _state["_running_since"] = time.time()
 
     logger.debug("Starting archive job.")
     _append_log("Archive run started.", "INFO")
     try:
-        stats = run_archive(config)
+        run_limit_seconds = interval_minutes * 0.9 * 60  # 90% of interval
+        deadline = time.time() + run_limit_seconds
+        stats = run_archive(config, deadline=deadline)
         with _state_lock:
             _state["last_run"] = datetime.now(timezone.utc)
             _state["last_stats"] = stats
             _state["run_count"] += 1
-            _state["running"] = False
         suffix = (
             " (stopped at timeout, will resume next run)"
             if stats.get("timed_out")
@@ -116,8 +141,10 @@ def _archive_job(config: dict) -> None:
     except Exception as exc:
         logger.error("Unhandled error in archive job: %s", exc)
         _append_log(f"Archive run failed: {exc}", "ERROR")
+    finally:
         with _state_lock:
             _state["running"] = False
+            _state["_running_since"] = None
 
 
 def start_scheduler(config_getter) -> BackgroundScheduler:
@@ -142,8 +169,9 @@ def start_scheduler(config_getter) -> BackgroundScheduler:
         _archive_job(config)
 
     config = config_getter()
-    interval_minutes = config["schedule"].get(
-        "interval_minutes", DEFAULT_INTERVAL_MINUTES
+    interval_minutes = max(
+        1,
+        config["schedule"].get("interval_minutes", DEFAULT_INTERVAL_MINUTES),
     )
 
     scheduler = BackgroundScheduler(daemon=True)

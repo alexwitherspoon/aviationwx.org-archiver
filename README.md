@@ -66,9 +66,9 @@ Key settings:
 | `archive.output_dir` | `/archive` | Where images are saved inside the container |
 | `archive.retention_days` | `0` | Days to keep files (0 = unlimited) |
 | `archive.retention_max_gb` | `0` | Max archive size in GB; oldest files removed first (0 = unlimited) |
-| `schedule.interval_minutes` | `15` | How often to fetch new images |
+| `schedule.interval_minutes` | `15` | How often to fetch new images (minimum 1). Each run is limited to 90% of this interval to avoid overlap. If a run appears stuck (e.g. thread died), the lock is auto-cleared after 2× the interval. |
 | `schedule.fetch_on_start` | `true` | Run an immediate fetch on container start |
-| `schedule.job_timeout_minutes` | `30` | Max minutes per run; next run resumes from where it stopped |
+| `schedule.job_timeout_minutes` | `30` | Max minutes per run when invoked directly (e.g. scripts). Scheduled runs use 90% of `interval_minutes`; next run resumes from where it stopped. |
 | `airports.archive_all` | `false` | Archive every airport on AviationWX.org |
 | `airports.selected` | `[KSPB, KAWO]` | Specific airport codes when archive_all is false |
 | `source.use_history_api` | `true` | Use history API to fetch all frames, download only missing; `false` = current image only per run |

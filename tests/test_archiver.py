@@ -270,6 +270,20 @@ def test_validate_config_rejects_root_output_dir():
         assert any("root" in e.lower() or "traversal" in e.lower() for e in errors)
 
 
+def test_validate_config_requires_interval_at_least_one():
+    """Config is invalid when schedule.interval_minutes is less than 1."""
+    from app.config import validate_config
+
+    config = {
+        "archive": {"output_dir": "/archive"},
+        "source": {"airports_api_url": "https://api.example.com/airports"},
+        "airports": {"archive_all": True, "selected": []},
+        "schedule": {"interval_minutes": 0},
+    }
+    errors = validate_config(config)
+    assert any("interval" in e.lower() and "1" in e for e in errors)
+
+
 # ---------------------------------------------------------------------------
 # Airport selection tests
 # ---------------------------------------------------------------------------

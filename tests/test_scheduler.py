@@ -3,6 +3,7 @@ Tests for app.scheduler — background job scheduling and trigger.
 """
 
 import copy
+import time
 from unittest.mock import patch
 
 from app.config import DEFAULT_CONFIG
@@ -123,13 +124,51 @@ def test_archive_job_calls_run_archive_when_config_valid():
 
     with patch("app.scheduler._state_lock"):
         with patch("app.scheduler._state", state_ref):
-            with patch("app.scheduler.run_archive", return_value=mock_stats):
+            with patch(
+                "app.scheduler.run_archive", return_value=mock_stats
+            ) as mock_run:
                 with patch("app.scheduler._append_log"):
                     _archive_job(config)
 
     assert state_ref["last_run"] is not None
     assert state_ref["last_stats"] == mock_stats
     assert state_ref["run_count"] == 1
+    mock_run.assert_called_once()
+    call_kwargs = mock_run.call_args[1]
+    assert "deadline" in call_kwargs
+    deadline = call_kwargs["deadline"]
+    assert deadline > time.time()
+
+
+def test_archive_job_passes_deadline_at_90_percent_of_interval():
+    """_archive_job passes deadline = now + 90% of interval_minutes."""
+    from app.scheduler import _archive_job
+
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["airports"]["selected"] = ["KSPB"]
+    config["schedule"]["interval_minutes"] = 15
+
+    state_ref = {
+        "last_run": None,
+        "last_stats": None,
+        "next_run": None,
+        "running": False,
+        "run_count": 0,
+        "log_entries": [],
+    }
+
+    with patch("app.scheduler._state_lock"):
+        with patch("app.scheduler._state", state_ref):
+            with patch("app.scheduler.run_archive") as mock_run:
+                with patch("app.scheduler._append_log"):
+                    before = time.time()
+                    _archive_job(config)
+
+    mock_run.assert_called_once()
+    deadline = mock_run.call_args[1]["deadline"]
+    # 90% of 15 min = 13.5 min = 810 seconds
+    run_limit = 15 * 0.9 * 60  # 810
+    assert run_limit - 2 <= (deadline - before) <= run_limit + 2
 
 
 def test_start_scheduler_adds_job_and_runs_fetch_on_start():
@@ -169,6 +208,35 @@ def test_start_scheduler_skips_initial_run_when_fetch_on_start_false():
             start_scheduler(config_getter)
 
     mock_thread.return_value.start.assert_not_called()
+
+
+def test_archive_job_clears_stale_lock_and_proceeds():
+    """_archive_job clears running lock when stuck longer than 2x interval."""
+    from app.scheduler import _archive_job
+
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["airports"]["selected"] = ["KSPB"]
+    config["schedule"]["interval_minutes"] = 15  # 2x = 30 min stale threshold
+
+    state_ref = {
+        "last_run": None,
+        "last_stats": None,
+        "next_run": None,
+        "running": True,  # Stuck from previous run
+        "_running_since": time.time() - (45 * 60),  # 45 min ago — past 30 min threshold
+        "run_count": 0,
+        "log_entries": [],
+    }
+
+    with patch("app.scheduler._state_lock"):
+        with patch("app.scheduler._state", state_ref):
+            with patch("app.scheduler.run_archive") as mock_run:
+                with patch("app.scheduler._append_log"):
+                    _archive_job(config)
+
+    mock_run.assert_called_once()
+    assert state_ref["running"] is False
+    assert state_ref["_running_since"] is None
 
 
 def test_archive_job_sets_running_false_on_exception():

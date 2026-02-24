@@ -227,6 +227,14 @@ def validate_config(config: dict) -> list[str]:
             "Check configuration."
         )
 
+    interval_minutes = config.get("schedule", {}).get(
+        "interval_minutes", DEFAULT_INTERVAL_MINUTES
+    )
+    if interval_minutes < 1:
+        errors.append(
+            "Schedule interval (schedule.interval_minutes) must be at least 1 minute."
+        )
+
     if errors:
         logger.debug("Config validation failed: %s", "; ".join(errors))
     else:
