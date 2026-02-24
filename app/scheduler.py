@@ -33,6 +33,7 @@ _state = {
     "run_count": 0,  # int — total number of completed runs
     "log_entries": [],  # list[dict] — recent log entries for the web GUI
     "_log_bytes": 0,  # internal: approximate byte size of log_entries
+    "_archive_cache_dirty": False,  # True after archive/retention; web clears cache
 }
 
 _MAX_LOG_BYTES = 500 * 1024  # 500 KB
@@ -42,6 +43,18 @@ def get_state() -> dict:
     """Return a copy of the current scheduler state."""
     with _state_lock:
         return {k: v for k, v in _state.items() if not k.startswith("_")}
+
+
+def clear_archive_cache_dirty() -> bool:
+    """
+    Clear the archive-cache-dirty flag. Returns True if it was set.
+
+    Web calls this before serving stats/tree; if True, web should invalidate
+    its cache. Avoids scheduler importing app.web (circular import / deadlock).
+    """
+    with _state_lock:
+        was_dirty = _state.pop("_archive_cache_dirty", False)
+        return was_dirty
 
 
 def _append_log(message: str, level: str = "INFO") -> None:
@@ -175,12 +188,7 @@ def _archive_job(config: dict) -> None:
         with _state_lock:
             _state["running"] = False
             _state["_running_since"] = None
-        try:
-            from app.web import invalidate_archive_cache
-
-            invalidate_archive_cache()
-        except ImportError:
-            pass
+            _state["_archive_cache_dirty"] = True
 
 
 def _retention_job(config: dict) -> None:
@@ -243,12 +251,8 @@ def _retention_job(config: dict) -> None:
     else:
         deleted = result.get("stats", {}).get("deleted", 0)
         _append_log(f"Retention cleanup complete — deleted {deleted} file(s).", "INFO")
-    try:
-        from app.web import invalidate_archive_cache
-
-        invalidate_archive_cache()
-    except ImportError:
-        pass
+    with _state_lock:
+        _state["_archive_cache_dirty"] = True
 
 
 def start_scheduler(config_getter) -> BackgroundScheduler:

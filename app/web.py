@@ -37,7 +37,7 @@ from app.constants import (
     DEFAULT_LOG_DISPLAY_COUNT,
     PERCENT_SCALE,
 )
-from app.scheduler import get_state, trigger_run
+from app.scheduler import clear_archive_cache_dirty, get_state, trigger_run
 from app.version import GIT_SHA, VERSION
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,12 @@ def invalidate_archive_cache() -> None:
     """Clear cached archive tree/stats. Call after archive or retention runs."""
     global _archive_cache
     _archive_cache.clear()
+
+
+def _maybe_invalidate_archive_cache() -> None:
+    """Clear cache if scheduler signaled archive/retention completed."""
+    if clear_archive_cache_dirty():
+        invalidate_archive_cache()
 
 
 @app.context_processor
@@ -145,6 +151,7 @@ def _archive_tree_uncached(output_dir: str) -> dict:
 
 def _archive_tree(output_dir: str) -> dict:
     """Cached wrapper for _archive_tree_uncached."""
+    _maybe_invalidate_archive_cache()
     key = (output_dir, "tree")
     now = time.time()
     if key in _archive_cache:
@@ -265,6 +272,7 @@ def _archive_stats_uncached(output_dir: str) -> dict:
 
 def _archive_stats(output_dir: str) -> dict:
     """Cached wrapper for _archive_stats_uncached."""
+    _maybe_invalidate_archive_cache()
     key = (output_dir, "stats")
     now = time.time()
     if key in _archive_cache:
