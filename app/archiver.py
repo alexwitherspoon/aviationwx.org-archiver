@@ -144,8 +144,12 @@ def _rate_limit(config: dict) -> None:
 
     Uses dynamically detected delay (_request_delay_seconds) when set by
     _detect_and_set_request_delay, otherwise request_delay_seconds from config.
+    Skips sleep when _skip_next_rate_limit is set (e.g. after 404) so the next
+    download starts immediately.
     """
     source = config.get("source", {})
+    if source.pop("_skip_next_rate_limit", False):
+        return
     delay = source.get("_request_delay_seconds")
     if delay is None:
         delay = source.get("request_delay_seconds", DEFAULT_REQUEST_DELAY_SECONDS)
@@ -844,6 +848,7 @@ def download_image_to_file(url: str, filepath: str, config: dict) -> bool:
                     url,
                 )
                 _delete_partial_file(filepath)
+                config.setdefault("source", {})["_skip_next_rate_limit"] = True
                 return False
 
             resp.raise_for_status()
@@ -957,6 +962,7 @@ def download_image(url: str, config: dict) -> bytes | None:
                     resp.status_code,
                     url,
                 )
+                config.setdefault("source", {})["_skip_next_rate_limit"] = True
                 return None
 
             resp.raise_for_status()
