@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 from datetime import datetime, timezone
 
@@ -52,6 +53,42 @@ def _inject_version():
 # ---------------------------------------------------------------------------
 # Context / helpers
 # ---------------------------------------------------------------------------
+
+
+def _parse_timestamp_from_filename(filename: str) -> str | None:
+    """
+    Parse a timestamp from an archive filename. Returns formatted UTC string or None.
+
+    Supports:
+    - Unix timestamp: 1718456780_0.jpg
+    - Date+time: 20240615_143000_webcam.jpg (YYYYMMDD_HHMMSS)
+    """
+    base = filename.rsplit(".", 1)[0] if "." in filename else filename
+    parts = base.split("_")
+    if len(parts) < 2:
+        return None
+    first = parts[0]
+    if re.match(r"^\d{10,}$", first):
+        try:
+            ts = int(first)
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        except (ValueError, OSError):
+            return None
+    date_ok = re.match(r"^\d{8}$", first)
+    time_ok = len(parts) >= 2 and re.match(r"^\d{6}$", parts[1])
+    if date_ok and time_ok:
+        y, m, d = first[:4], first[4:6], first[6:8]
+        h, mi, s = parts[1][:2], parts[1][2:4], parts[1][4:6]
+        return f"{y}-{m}-{d} {h}:{mi}:{s} UTC"
+    return None
+
+
+@app.template_filter("timestamp_from_filename")
+def timestamp_from_filename_filter(filename: str) -> str:
+    """Parse UTC timestamp from filename, or return '—' if unparseable."""
+    result = _parse_timestamp_from_filename(filename)
+    return result if result else "—"
 
 
 def _archive_tree(output_dir: str) -> dict:

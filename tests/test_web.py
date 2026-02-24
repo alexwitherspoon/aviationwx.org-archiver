@@ -16,6 +16,7 @@ from app.web import (
     _disk_usage,
     _form_to_config,
     _format_size_in_unit,
+    _parse_timestamp_from_filename,
     _pick_display_unit,
 )
 from app.web import (
@@ -32,6 +33,26 @@ def test_version_module_provides_version_and_sha():
     assert isinstance(VERSION, str)
     assert len(VERSION) > 0
     assert isinstance(GIT_SHA, str)
+
+
+def test_parse_timestamp_from_filename_unix_format():
+    """_parse_timestamp_from_filename parses Unix timestamp format."""
+    result = _parse_timestamp_from_filename("1718456780_0.jpg")
+    assert result is not None
+    assert "2024-06" in result
+    assert " UTC" in result
+
+
+def test_parse_timestamp_from_filename_date_time_format():
+    """_parse_timestamp_from_filename parses YYYYMMDD_HHMMSS format."""
+    result = _parse_timestamp_from_filename("20240615_143000_webcam.jpg")
+    assert result == "2024-06-15 14:30:00 UTC"
+
+
+def test_parse_timestamp_from_filename_returns_none_for_unparseable():
+    """_parse_timestamp_from_filename returns None for non-matching filenames."""
+    assert _parse_timestamp_from_filename("random_file.jpg") is None
+    assert _parse_timestamp_from_filename("single_part") is None
 
 
 def test_archive_tree_returns_empty_when_output_dir_missing():
@@ -523,6 +544,57 @@ def test_browse_includes_preview_and_clickable_files(flask_client):
         assert b"prev-btn" in resp.data
         assert b"next-btn" in resp.data
         assert b"/archive/KSPB/2024/06/15/north_runway/image.jpg" in resp.data
+    finally:
+        config["archive"]["output_dir"] = orig_dir
+
+
+def test_browse_multiple_images_has_valid_data_siblings(flask_client):
+    """Browse page with multiple images has parseable data-siblings JSON."""
+    import json
+    import re
+
+    config = flask_app.config["ARCHIVER_CONFIG"]
+    orig_dir = config["archive"]["output_dir"]
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "north_runway")
+            os.makedirs(path, exist_ok=True)
+            for i in range(3):
+                with open(os.path.join(path, f"171845678{i}_0.jpg"), "wb") as fh:
+                    fh.write(b"x")
+            config["archive"]["output_dir"] = tmpdir
+            flask_app.config["ARCHIVER_CONFIG"] = config
+
+            resp = flask_client.get("/browse")
+
+        assert resp.status_code == 200
+        match = re.search(rb"data-siblings=\'([^\']+)\'", resp.data)
+        assert match, "data-siblings attribute not found"
+        siblings_json = match.group(1).decode("utf-8")
+        siblings = json.loads(siblings_json)
+        assert len(siblings) == 3
+        assert all("path" in s and "filename" in s and "index" in s for s in siblings)
+    finally:
+        config["archive"]["output_dir"] = orig_dir
+
+
+def test_browse_includes_time_utc_column(flask_client):
+    """Browse page table has Time (UTC) column header."""
+    config = flask_app.config["ARCHIVER_CONFIG"]
+    orig_dir = config["archive"]["output_dir"]
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "north_runway")
+            os.makedirs(path, exist_ok=True)
+            with open(os.path.join(path, "20240615_143000_webcam.jpg"), "wb") as fh:
+                fh.write(b"x")
+            config["archive"]["output_dir"] = tmpdir
+            flask_app.config["ARCHIVER_CONFIG"] = config
+
+            resp = flask_client.get("/browse")
+
+        assert resp.status_code == 200
+        assert b"Time (UTC)" in resp.data
     finally:
         config["archive"]["output_dir"] = orig_dir
 
