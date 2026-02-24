@@ -1,0 +1,8 @@
+name: "AviationWX Archiver CodeQL config"
+
+# Exclude py/incomplete-url-substring-sanitization: all instances are in test code
+# (assertions like `assert "aviationwx.org" in url`), not production URL sanitization.
+# Production app/ does not use substring checks for URL validation.
+query-filters:
+  - exclude:
+      id: py/incomplete-url-substring-sanitization
