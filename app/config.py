@@ -44,6 +44,7 @@ DEFAULT_CONFIG = {
         "selected": [],
     },
     "web": {
+        "enabled": True,
         "port": 8080,
         "host": "0.0.0.0",
         "log_display_count": DEFAULT_LOG_DISPLAY_COUNT,
@@ -78,6 +79,7 @@ _ENV_TO_CONFIG: list[tuple[str, tuple[str, ...], str | type]] = [
     ),
     ("ARCHIVER_AIRPORTS_ARCHIVE_ALL", ("airports", "archive_all"), bool),
     ("ARCHIVER_AIRPORTS_SELECTED", ("airports", "selected"), "list"),
+    ("ARCHIVER_WEB_ENABLED", ("web", "enabled"), bool),
     ("ARCHIVER_WEB_PORT", ("web", "port"), int),
     ("ARCHIVER_WEB_HOST", ("web", "host"), str),
     ("ARCHIVER_WEB_LOG_DISPLAY_COUNT", ("web", "log_display_count"), int),

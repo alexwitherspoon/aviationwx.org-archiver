@@ -118,6 +118,17 @@ def test_load_config_env_var_overrides_log_level():
     assert config["logging"]["level"] == "DEBUG"
 
 
+def test_load_config_env_var_overrides_web_enabled():
+    """ARCHIVER_WEB_ENABLED=false disables web UI."""
+    with patch.dict(
+        os.environ,
+        {"ARCHIVER_WEB_ENABLED": "false"},
+        clear=False,
+    ):
+        config = load_config("/nonexistent/config.yaml")
+    assert config["web"]["enabled"] is False
+
+
 def test_check_host_resources_logs_debug_when_output_dir_write_test_unlink_fails():
     """check_host_resources logs debug when write-test file cannot be removed."""
     with tempfile.TemporaryDirectory() as tmpdir:

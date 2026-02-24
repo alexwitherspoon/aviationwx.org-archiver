@@ -72,6 +72,7 @@ Key settings:
 | `source.use_history_api` | `true` | Use history API to fetch all frames, download only missing; `false` = current image only per run |
 | `source.api_key` | `""` | Partner API key (optional). Enables 500 req/min vs 100/min anonymous. |
 | `source.request_delay_seconds` | `1.2` | Delay before each API request (half of 100/min anonymous; set 0 for Partner keys) |
+| `web.enabled` | `true` | Set to `false` in secure environments to run scheduler only (no web UI) |
 | `web.port` | `8080` | Web GUI port |
 | `logging.level` | `INFO` | Log verbosity: DEBUG, INFO, WARNING, ERROR |
 
@@ -88,6 +89,7 @@ Any config setting can be overridden via `ARCHIVER_*` environment variables. Env
 | `ARCHIVER_SOURCE_API_KEY` | `source.api_key` | `your-key` |
 | `ARCHIVER_AIRPORTS_ARCHIVE_ALL` | `airports.archive_all` | `false` |
 | `ARCHIVER_AIRPORTS_SELECTED` | `airports.selected` | `KSPB,KAWO` |
+| `ARCHIVER_WEB_ENABLED` | `web.enabled` | `true` |
 | `ARCHIVER_LOGGING_LEVEL` | `logging.level` | `INFO` |
 
 Booleans: `true`, `false`, `1`, `0`, `yes`, `no`. Lists: comma- or newline-separated (e.g. `KSPB,KAWO`).
@@ -186,6 +188,24 @@ docker run -d \
   -e ARCHIVER_AIRPORTS_SELECTED=KSPB,KAWO \
   ghcr.io/alexwitherspoon/aviationwx.org-archiver:latest
 ```
+
+### Unraid
+
+1. **Docker** → **Add Container**
+2. **Name:** `aviationwx-archiver`
+3. **Repository:** `ghcr.io/alexwitherspoon/aviationwx.org-archiver:latest` (or `:edge` for latest main)
+4. **Network Type:** Bridge
+5. **Port:** Host `8080` → Container `8080`
+6. **Volume mappings:**
+   - Host: `/mnt/user/appdata/aviationwx/archive` → Container: `/archive`
+   - Add a path for config (optional): Host: `/mnt/user/appdata/aviationwx/config` → Container: `/config`
+7. **Environment variables** (optional; or configure via web GUI after first start):
+   - `ARCHIVER_AIRPORTS_SELECTED` = `KSPB,KAWO` (comma-separated airport codes)
+   - `ARCHIVER_SCHEDULE_INTERVAL_MINUTES` = `15`
+8. **Apply** and start the container.
+9. Open `http://your-unraid-ip:8080` to configure airports and schedule.
+
+Create the host paths first (e.g. `mkdir -p /mnt/user/appdata/aviationwx/archive` via Unraid terminal or a share).
 
 ## Requirements
 
