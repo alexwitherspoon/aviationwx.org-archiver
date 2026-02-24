@@ -32,6 +32,34 @@
   </div>
 </div>
 
+{% if archive_stats.disk_usage %}
+<div class="card">
+  <h2 style="margin:0 0 12px 0">Disk Usage</h2>
+  <div style="display:flex; align-items:center; gap:24px; flex-wrap:wrap;">
+    <div class="stat" style="text-align:left;">
+      <div class="value">{{ archive_stats.disk_usage.used_gb }} GB</div>
+      <div class="label">Used</div>
+    </div>
+    <div class="stat" style="text-align:left;">
+      <div class="value">{{ archive_stats.disk_usage.free_gb }} GB</div>
+      <div class="label">Available</div>
+    </div>
+    <div class="stat" style="text-align:left;">
+      <div class="value">{{ archive_stats.disk_usage.total_gb }} GB</div>
+      <div class="label">Total</div>
+    </div>
+    <div style="flex:1; min-width:120px;">
+      <div style="display:flex; justify-content:space-between; font-size:12px; color:var(--text-muted); margin-bottom:4px;">
+        <span>{{ archive_stats.disk_usage.percent_used }}% used</span>
+      </div>
+      <div style="height:8px; background:var(--border); border-radius:4px; overflow:hidden;">
+        <div style="height:100%; width:{{ archive_stats.disk_usage.percent_used }}%; background:var(--accent); border-radius:4px;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <!-- Run status -->
 <div class="card">
   <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
