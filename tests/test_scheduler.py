@@ -3,11 +3,30 @@ Tests for app.scheduler — background job scheduling and trigger.
 """
 
 import copy
+import logging
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from app.config import DEFAULT_CONFIG
 from app.scheduler import get_state, trigger_run
+
+
+def _mock_process_to_run_synchronously():
+    """Patch Process so start() runs the target in-process (for tests)."""
+
+    def create_process(target=None, args=None, **kwargs):
+        m = MagicMock()
+
+        def start():
+            if target and args is not None:
+                target(*args)
+
+        m.start = start
+        m.join = MagicMock()
+        m.is_alive = MagicMock(return_value=False)  # After sync run, target done
+        return m
+
+    return patch("app.scheduler.multiprocessing.Process", side_effect=create_process)
 
 
 def test_get_state_returns_dict_with_expected_keys():
@@ -93,14 +112,42 @@ def test_archive_job_skips_when_already_running():
 
     with patch("app.scheduler._state_lock"):
         with patch("app.scheduler._state", {"running": True}):
-            with patch("app.scheduler.run_archive") as mock_run:
+            with patch("app.worker.run_archive") as mock_run:
                 _archive_job(config)
 
     mock_run.assert_not_called()
 
 
+def test_archive_job_forwards_worker_logs_to_append_log():
+    """Worker log messages are received and passed to _append_log."""
+    from app.scheduler import _archive_job
+
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["airports"]["selected"] = ["KSPB"]
+    stats = {
+        "airports_processed": 1,
+        "images_fetched": 0,
+        "images_saved": 0,
+        "errors": 0,
+    }
+
+    def fake_run(*a, **kw):
+        logging.getLogger("app.archiver").info("test log from worker")
+        return stats
+
+    with _mock_process_to_run_synchronously():
+        with patch("app.scheduler._state_lock"):
+            with patch("app.scheduler._state", {"running": False, "run_count": 0}):
+                with patch("app.scheduler._append_log") as mock_append:
+                    with patch("app.worker.run_archive", side_effect=fake_run):
+                        _archive_job(config)
+
+    log_calls = [c for c in mock_append.call_args_list if "test log" in str(c)]
+    assert len(log_calls) >= 1
+
+
 def test_archive_job_calls_run_archive_when_config_valid():
-    """_archive_job calls run_archive and updates state on success."""
+    """_archive_job runs worker and updates state on success."""
     from app.scheduler import _archive_job
 
     config = copy.deepcopy(DEFAULT_CONFIG)
@@ -122,13 +169,14 @@ def test_archive_job_calls_run_archive_when_config_valid():
         "log_entries": [],
     }
 
-    with patch("app.scheduler._state_lock"):
-        with patch("app.scheduler._state", state_ref):
-            with patch(
-                "app.scheduler.run_archive", return_value=mock_stats
-            ) as mock_run:
-                with patch("app.scheduler._append_log"):
-                    _archive_job(config)
+    with _mock_process_to_run_synchronously():
+        with patch("app.scheduler._state_lock"):
+            with patch("app.scheduler._state", state_ref):
+                with patch(
+                    "app.worker.run_archive", return_value=mock_stats
+                ) as mock_run:
+                    with patch("app.scheduler._append_log"):
+                        _archive_job(config)
 
     assert state_ref["last_run"] is not None
     assert state_ref["last_stats"] == mock_stats
@@ -157,12 +205,13 @@ def test_archive_job_passes_deadline_at_90_percent_of_interval():
         "log_entries": [],
     }
 
-    with patch("app.scheduler._state_lock"):
-        with patch("app.scheduler._state", state_ref):
-            with patch("app.scheduler.run_archive") as mock_run:
-                with patch("app.scheduler._append_log"):
-                    before = time.time()
-                    _archive_job(config)
+    with _mock_process_to_run_synchronously():
+        with patch("app.scheduler._state_lock"):
+            with patch("app.scheduler._state", state_ref):
+                with patch("app.worker.run_archive") as mock_run:
+                    with patch("app.scheduler._append_log"):
+                        before = time.time()
+                        _archive_job(config)
 
     mock_run.assert_called_once()
     deadline = mock_run.call_args[1]["deadline"]
@@ -182,9 +231,10 @@ def test_start_scheduler_adds_job_and_runs_fetch_on_start():
     def config_getter():
         return config
 
-    with patch("app.scheduler.run_archive"):
-        with patch("app.scheduler.threading.Thread") as mock_thread:
-            scheduler = start_scheduler(config_getter)
+    with _mock_process_to_run_synchronously():
+        with patch("app.worker.run_archive"):
+            with patch("app.scheduler.threading.Thread") as mock_thread:
+                scheduler = start_scheduler(config_getter)
 
     assert scheduler is not None
     job = scheduler.get_job("archive")
@@ -203,9 +253,10 @@ def test_start_scheduler_skips_initial_run_when_fetch_on_start_false():
     def config_getter():
         return config
 
-    with patch("app.scheduler.run_archive"):
-        with patch("app.scheduler.threading.Thread") as mock_thread:
-            start_scheduler(config_getter)
+    with _mock_process_to_run_synchronously():
+        with patch("app.worker.run_archive"):
+            with patch("app.scheduler.threading.Thread") as mock_thread:
+                start_scheduler(config_getter)
 
     mock_thread.return_value.start.assert_not_called()
 
@@ -228,11 +279,12 @@ def test_archive_job_clears_stale_lock_and_proceeds():
         "log_entries": [],
     }
 
-    with patch("app.scheduler._state_lock"):
-        with patch("app.scheduler._state", state_ref):
-            with patch("app.scheduler.run_archive") as mock_run:
-                with patch("app.scheduler._append_log"):
-                    _archive_job(config)
+    with _mock_process_to_run_synchronously():
+        with patch("app.scheduler._state_lock"):
+            with patch("app.scheduler._state", state_ref):
+                with patch("app.worker.run_archive") as mock_run:
+                    with patch("app.scheduler._append_log"):
+                        _archive_job(config)
 
     mock_run.assert_called_once()
     assert state_ref["running"] is False
@@ -240,7 +292,7 @@ def test_archive_job_clears_stale_lock_and_proceeds():
 
 
 def test_archive_job_sets_running_false_on_exception():
-    """_archive_job sets running=False when run_archive raises."""
+    """_archive_job sets running=False when worker returns error."""
     from app.scheduler import _archive_job
 
     config = copy.deepcopy(DEFAULT_CONFIG)
@@ -255,15 +307,16 @@ def test_archive_job_sets_running_false_on_exception():
         "log_entries": [],
     }
 
-    with patch("app.scheduler._state_lock"):
-        with patch("app.scheduler._state", state_ref):
-            with patch(
-                "app.scheduler.run_archive",
-                side_effect=RuntimeError("test error"),
-            ):
-                with patch("app.scheduler._append_log"):
-                    with patch("app.scheduler.logger"):
-                        _archive_job(config)
+    with _mock_process_to_run_synchronously():
+        with patch("app.scheduler._state_lock"):
+            with patch("app.scheduler._state", state_ref):
+                with patch(
+                    "app.worker.run_archive",
+                    side_effect=RuntimeError("test error"),
+                ):
+                    with patch("app.scheduler._append_log"):
+                        with patch("app.scheduler.logger"):
+                            _archive_job(config)
 
     assert state_ref["running"] is False
 

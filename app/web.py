@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from datetime import datetime, timezone
 
 from flask import (
@@ -42,6 +43,16 @@ from app.version import GIT_SHA, VERSION
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+# TTL cache for archive tree/stats (avoids full scans on every request)
+_archive_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+_ARCHIVE_CACHE_TTL_SEC = 60
+
+
+def invalidate_archive_cache() -> None:
+    """Clear cached archive tree/stats. Call after archive or retention runs."""
+    global _archive_cache
+    _archive_cache.clear()
 
 
 @app.context_processor
@@ -91,7 +102,7 @@ def timestamp_from_filename_filter(filename: str) -> str:
     return result if result else "—"
 
 
-def _archive_tree(output_dir: str) -> dict:
+def _archive_tree_uncached(output_dir: str) -> dict:
     """
     Build a nested dict representing the archive directory tree.
 
@@ -130,6 +141,19 @@ def _archive_tree(output_dir: str) -> dict:
                         tree[airport][year][month][day][camera] = files
 
     return tree
+
+
+def _archive_tree(output_dir: str) -> dict:
+    """Cached wrapper for _archive_tree_uncached."""
+    key = (output_dir, "tree")
+    now = time.time()
+    if key in _archive_cache:
+        ts, data = _archive_cache[key]
+        if now - ts < _ARCHIVE_CACHE_TTL_SEC:
+            return data
+    data = _archive_tree_uncached(output_dir)
+    _archive_cache[key] = (now, data)
+    return data
 
 
 def _format_size_in_unit(bytes_val: int, unit: str) -> float:
@@ -201,7 +225,7 @@ def _disk_usage(path: str) -> dict | None:
         return None
 
 
-def _archive_stats(output_dir: str) -> dict:
+def _archive_stats_uncached(output_dir: str) -> dict:
     """Return basic stats about the archive directory."""
     total_files = 0
     total_size = 0
@@ -221,8 +245,9 @@ def _archive_stats(output_dir: str) -> dict:
                 continue
             fpath = os.path.join(root, fname)
             try:
+                st = os.stat(fpath)
                 total_files += 1
-                total_size += os.path.getsize(fpath)
+                total_size += st.st_size
                 # archive: output_dir/AIRPORT/YYYY/MM/DD/file — airport is first
                 parts = fpath.replace(output_dir, "").strip(os.sep).split(os.sep)
                 if len(parts) >= 1:
@@ -236,6 +261,19 @@ def _archive_stats(output_dir: str) -> dict:
         "airports": sorted(airports),
         "disk_usage": _disk_usage(output_dir),
     }
+
+
+def _archive_stats(output_dir: str) -> dict:
+    """Cached wrapper for _archive_stats_uncached."""
+    key = (output_dir, "stats")
+    now = time.time()
+    if key in _archive_cache:
+        ts, data = _archive_cache[key]
+        if now - ts < _ARCHIVE_CACHE_TTL_SEC:
+            return data
+    data = _archive_stats_uncached(output_dir)
+    _archive_cache[key] = (now, data)
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +456,17 @@ def _form_to_config(form, existing_config: dict) -> dict:
     if retention_max_gb < 0:
         raise ValueError("retention_max_gb must be >= 0")
     config["archive"]["retention_max_gb"] = retention_max_gb
+
+    # Retention schedule
+    config["schedule"]["retention_on_archive_run"] = "retention_on_archive_run" in form
+    retention_hour = int(form.get("retention_hour", 3))
+    if not 0 <= retention_hour <= 23:
+        raise ValueError("retention_hour must be 0–23")
+    config["schedule"]["retention_hour"] = retention_hour
+    retention_minute = int(form.get("retention_minute", 0))
+    if not 0 <= retention_minute <= 59:
+        raise ValueError("retention_minute must be 0–59")
+    config["schedule"]["retention_minute"] = retention_minute
 
     # Airports
     config["airports"]["archive_all"] = "archive_all" in form

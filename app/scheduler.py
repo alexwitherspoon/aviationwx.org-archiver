@@ -2,20 +2,23 @@
 AviationWX.org Archiver - Background scheduler.
 
 Runs archive passes on a configurable interval using APScheduler.
+Archive jobs run in a separate process to avoid GIL contention with the web UI.
 """
 
 import json
 import logging
+import multiprocessing
 import threading
 import time
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app.archiver import run_archive
 from app.config import validate_config
 from app.constants import DEFAULT_INTERVAL_MINUTES
+from app.worker import MSG_COMPLETE, MSG_LOG, run_archive_worker, run_retention_worker
 
 logger = logging.getLogger(__name__)
 
@@ -118,33 +121,134 @@ def _archive_job(config: dict) -> None:
 
     logger.debug("Starting archive job.")
     _append_log("Archive run started.", "INFO")
+
+    result_queue: multiprocessing.Queue = multiprocessing.Queue()
+    process = multiprocessing.Process(
+        target=run_archive_worker,
+        args=(config, result_queue),
+        name="archive-worker",
+    )
+    process.start()
+
+    # Consume queue: log messages -> _append_log; complete -> result
+    result = None
+    while result is None:
+        try:
+            msg = result_queue.get(timeout=0.5)
+            if msg.get("type") == MSG_LOG:
+                _append_log(msg["message"], msg.get("level", "INFO"))
+            elif msg.get("type") == MSG_COMPLETE:
+                result = msg
+        except Exception:
+            if not process.is_alive():
+                try:
+                    result = result_queue.get(timeout=1)
+                except Exception:
+                    result = {"stats": None, "error": "Worker exited without result"}
+                break
+
+    process.join()
+
     try:
-        run_limit_seconds = interval_minutes * 0.9 * 60  # 90% of interval
-        deadline = time.time() + run_limit_seconds
-        stats = run_archive(config, deadline=deadline)
-        with _state_lock:
-            _state["last_run"] = datetime.now(timezone.utc)
-            _state["last_stats"] = stats
-            _state["run_count"] += 1
-        suffix = (
-            " (stopped at timeout, will resume next run)"
-            if stats.get("timed_out")
-            else ""
-        )
-        _append_log(
-            f"Archive run complete{suffix} — airports: {stats['airports_processed']}, "
-            f"images fetched: {stats['images_fetched']}, "
-            f"saved: {stats['images_saved']}, "
-            f"errors: {stats['errors']}.",
-            "INFO",
-        )
-    except Exception as exc:
-        logger.error("Unhandled error in archive job: %s", exc)
-        _append_log(f"Archive run failed: {exc}", "ERROR")
+        if result["error"]:
+            logger.error("Archive run failed: %s", result["error"])
+            _append_log(f"Archive run failed: {result['error']}", "ERROR")
+        else:
+            stats = result["stats"]
+            with _state_lock:
+                _state["last_run"] = datetime.now(timezone.utc)
+                _state["last_stats"] = stats
+                _state["run_count"] += 1
+            suffix = (
+                " (stopped at timeout, will resume next run)"
+                if stats.get("timed_out")
+                else ""
+            )
+            msg = (
+                f"Archive run complete{suffix} — airports: "
+                f"{stats['airports_processed']}, images fetched: "
+                f"{stats['images_fetched']}, saved: {stats['images_saved']}, "
+                f"errors: {stats['errors']}."
+            )
+            _append_log(msg, "INFO")
     finally:
         with _state_lock:
             _state["running"] = False
             _state["_running_since"] = None
+        try:
+            from app.web import invalidate_archive_cache
+
+            invalidate_archive_cache()
+        except ImportError:
+            pass
+
+
+def _retention_job(config: dict) -> None:
+    """Scheduled job: run retention cleanup in a separate process."""
+    _apply_log_level(config)
+    errors = validate_config(config)
+    if errors:
+        for err in errors:
+            logger.warning("Config validation: %s", err)
+            _append_log(f"Config error: {err}", "WARNING")
+        return
+
+    retention_days = config.get("archive", {}).get("retention_days", 0)
+    retention_max_gb = config.get("archive", {}).get("retention_max_gb", 0)
+    if isinstance(retention_max_gb, str):
+        from app.constants import parse_storage_gb
+
+        retention_max_gb = parse_storage_gb(retention_max_gb)
+    if retention_days <= 0 and (not retention_max_gb or retention_max_gb <= 0):
+        logger.debug(
+            "Retention job skipped: retention_days and retention_max_gb disabled."
+        )
+        return
+
+    logger.info("Starting retention cleanup job.")
+    _append_log("Retention cleanup started.", "INFO")
+
+    result_queue: multiprocessing.Queue = multiprocessing.Queue()
+    process = multiprocessing.Process(
+        target=run_retention_worker,
+        args=(config, result_queue),
+        name="retention-worker",
+    )
+    process.start()
+
+    result = None
+    while result is None:
+        try:
+            msg = result_queue.get(timeout=0.5)
+            if msg.get("type") == MSG_LOG:
+                _append_log(msg["message"], msg.get("level", "INFO"))
+            elif msg.get("type") == MSG_COMPLETE:
+                result = msg
+        except Exception:
+            if not process.is_alive():
+                try:
+                    result = result_queue.get(timeout=1)
+                except Exception:
+                    result = {
+                        "stats": None,
+                        "error": "Retention worker exited without result",
+                    }
+                break
+
+    process.join()
+
+    if result["error"]:
+        logger.error("Retention cleanup failed: %s", result["error"])
+        _append_log(f"Retention cleanup failed: {result['error']}", "ERROR")
+    else:
+        deleted = result.get("stats", {}).get("deleted", 0)
+        _append_log(f"Retention cleanup complete — deleted {deleted} file(s).", "INFO")
+    try:
+        from app.web import invalidate_archive_cache
+
+        invalidate_archive_cache()
+    except ImportError:
+        pass
 
 
 def start_scheduler(config_getter) -> BackgroundScheduler:
@@ -182,6 +286,32 @@ def start_scheduler(config_getter) -> BackgroundScheduler:
         name="AviationWX Archiver",
         replace_existing=True,
     )
+
+    # Add daily retention job when retention is configured
+    retention_days = config.get("archive", {}).get("retention_days", 0)
+    retention_max_gb = config.get("archive", {}).get("retention_max_gb", 0)
+    if isinstance(retention_max_gb, str):
+        from app.constants import parse_storage_gb
+
+        retention_max_gb = parse_storage_gb(retention_max_gb)
+    if retention_days > 0 or (retention_max_gb and retention_max_gb > 0):
+        retention_hour = config.get("schedule", {}).get("retention_hour", 3)
+        retention_minute = config.get("schedule", {}).get("retention_minute", 0)
+        scheduler.add_job(
+            lambda: _retention_job(config_getter()),
+            trigger=CronTrigger(hour=retention_hour, minute=retention_minute),
+            id="retention",
+            name="Retention Cleanup",
+            replace_existing=True,
+        )
+        logger.info(
+            "Retention job scheduled daily at %02d:%02d UTC.",
+            retention_hour,
+            retention_minute,
+        )
+        t = f"{retention_hour:02d}:{retention_minute:02d} UTC"
+        _append_log(f"Retention cleanup daily at {t}.", "INFO")
+
     scheduler.start()
 
     job = scheduler.get_job("archive")

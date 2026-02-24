@@ -29,6 +29,13 @@ DEFAULT_CONFIG = {
         "interval_minutes": DEFAULT_INTERVAL_MINUTES,
         "fetch_on_start": True,
         "job_timeout_minutes": 30,
+        # Unix nice increment for worker (higher = lower CPU priority). 0 = no change.
+        "worker_nice": 10,
+        # Retention: run as separate daily job (recommended for large archives).
+        # retention_on_archive_run: when True, also run at end of each archive run.
+        "retention_on_archive_run": False,
+        "retention_hour": 3,  # Daily run hour (0-23, UTC). 3 = 3 AM.
+        "retention_minute": 0,
     },
     "source": {
         "base_url": "https://aviationwx.org",
@@ -70,6 +77,14 @@ _ENV_TO_CONFIG: list[tuple[str, tuple[str, ...], str | type]] = [
     ("ARCHIVER_SCHEDULE_INTERVAL_MINUTES", ("schedule", "interval_minutes"), int),
     ("ARCHIVER_SCHEDULE_FETCH_ON_START", ("schedule", "fetch_on_start"), bool),
     ("ARCHIVER_SCHEDULE_JOB_TIMEOUT_MINUTES", ("schedule", "job_timeout_minutes"), int),
+    ("ARCHIVER_SCHEDULE_WORKER_NICE", ("schedule", "worker_nice"), int),
+    (
+        "ARCHIVER_SCHEDULE_RETENTION_ON_ARCHIVE_RUN",
+        ("schedule", "retention_on_archive_run"),
+        bool,
+    ),
+    ("ARCHIVER_SCHEDULE_RETENTION_HOUR", ("schedule", "retention_hour"), int),
+    ("ARCHIVER_SCHEDULE_RETENTION_MINUTE", ("schedule", "retention_minute"), int),
     ("ARCHIVER_SOURCE_BASE_URL", ("source", "base_url"), str),
     ("ARCHIVER_SOURCE_AIRPORTS_API_URL", ("source", "airports_api_url"), str),
     ("ARCHIVER_SOURCE_API_KEY", ("source", "api_key"), str),
@@ -234,6 +249,14 @@ def validate_config(config: dict) -> list[str]:
         errors.append(
             "Schedule interval (schedule.interval_minutes) must be at least 1 minute."
         )
+
+    retention_hour = config.get("schedule", {}).get("retention_hour", 3)
+    if not 0 <= retention_hour <= 23:
+        errors.append("Schedule retention_hour must be 0–23 (UTC).")
+
+    retention_minute = config.get("schedule", {}).get("retention_minute", 0)
+    if not 0 <= retention_minute <= 59:
+        errors.append("Schedule retention_minute must be 0–59.")
 
     if errors:
         logger.debug("Config validation failed: %s", "; ".join(errors))

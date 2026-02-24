@@ -51,9 +51,10 @@ restart: down up ## Restart the archiver container
 # Development (run locally without Docker)
 # ---------------------------------------------------------------------------
 .PHONY: dev
-dev: ## Run the archiver locally (requires pip install)
+dev: ## Run the archiver locally (requires pip install). Uses /tmp/aviationwx-archive for output when ARCHIVER_ARCHIVE_OUTPUT_DIR is unset.
 	@[ -f $(CONFIG_FILE) ] || cp config/config.yaml.example $(CONFIG_FILE)
-	ARCHIVER_CONFIG=$(CONFIG_FILE) python main.py
+	@mkdir -p $${ARCHIVER_ARCHIVE_OUTPUT_DIR:-/tmp/aviationwx-archive}
+	ARCHIVER_CONFIG=$(CONFIG_FILE) ARCHIVER_ARCHIVE_OUTPUT_DIR=$${ARCHIVER_ARCHIVE_OUTPUT_DIR:-/tmp/aviationwx-archive} python3 main.py
 
 # ---------------------------------------------------------------------------
 # Linting and Formatting

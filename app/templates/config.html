@@ -70,6 +70,26 @@
                placeholder="e.g. 100 for 100GB, 1024 for 1TB">
         <small style="color:var(--text-muted)">Oldest files removed first when over limit.</small>
       </div>
+      <div>
+        <label for="retention_hour">Retention cleanup time (UTC)</label>
+        <div class="grid-2" style="gap:8px; grid-template-columns: 1fr 1fr;">
+          <input type="number" id="retention_hour" name="retention_hour"
+                 min="0" max="23" placeholder="3"
+                 value="{{ config.schedule.get('retention_hour', 3) }}">
+          <input type="number" id="retention_minute" name="retention_minute"
+                 min="0" max="59" placeholder="0"
+                 value="{{ config.schedule.get('retention_minute', 0) }}">
+        </div>
+        <small style="color:var(--text-muted)">Daily cleanup hour:minute (UTC). Default 03:00 = 3 AM.</small>
+      </div>
+      <div style="padding-top:22px">
+        <div class="checkbox-row">
+          <input type="checkbox" id="retention_on_archive_run" name="retention_on_archive_run"
+                 {% if config.schedule.get('retention_on_archive_run') %}checked{% endif %}>
+          <label for="retention_on_archive_run" style="margin:0; color:var(--text)">Also run retention at end of each archive run</label>
+        </div>
+        <small style="color:var(--text-muted)">For small archives only. Large archives: use daily schedule above.</small>
+      </div>
     </div>
   </div>
 

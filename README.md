@@ -13,6 +13,8 @@ Part of the [AviationWX.org](https://github.com/alexwitherspoon/aviationwx) proj
 - **Single config file** — one YAML file drives the entire system (stored in named volume)
 - **Environment variable overrides** — configure via `ARCHIVER_*` env vars
 - **Web GUI** — local dashboard for monitoring, configuration, and browsing the archive
+- **Process-based workers** — archive jobs run in a separate process to avoid GIL contention; web UI stays responsive during runs
+- **Live log streaming** — worker forwards archiver logs to the main process in real time for the web UI
 - **Retention policy** — optional automatic cleanup of files older than N days
 - **Minimal dependencies** — Python + Flask + Requests + PyYAML + APScheduler
 - **Docker-first** — simple `docker compose up` to get started
@@ -38,10 +40,13 @@ Then run with volumes (see Docker section below).
 git clone https://github.com/alexwitherspoon/aviationwx.org-archiver.git
 cd aviationwx.org-archiver
 
-# 2. Start the container (archive stored in ./archive, config in named volume)
+# 2. Create the archive directory (entrypoint fixes permissions on first run)
+mkdir -p archive
+
+# 3. Start the container (archive stored in ./archive, config in named volume)
 docker compose up -d
 
-# 3. Open the web GUI to configure airports and schedule
+# 4. Open the web GUI to configure airports and schedule
 open http://localhost:8080
 ```
 
@@ -64,11 +69,15 @@ Key settings:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `archive.output_dir` | `/archive` | Where images are saved inside the container |
-| `archive.retention_days` | `0` | Days to keep files (0 = unlimited) |
-| `archive.retention_max_gb` | `0` | Max archive size in GB; oldest files removed first (0 = unlimited) |
+| `archive.retention_days` | `0` | Days to keep files (0 = unlimited). Cleanup runs as separate daily job (3 AM UTC). |
+| `archive.retention_max_gb` | `0` | Max archive size in GB; oldest files removed first (0 = unlimited). |
 | `schedule.interval_minutes` | `15` | How often to fetch new images (minimum 1). Each run is limited to 90% of this interval to avoid overlap. If a run appears stuck (e.g. thread died), the lock is auto-cleared after 2× the interval. |
 | `schedule.fetch_on_start` | `true` | Run an immediate fetch on container start |
 | `schedule.job_timeout_minutes` | `30` | Max minutes per run when invoked directly (e.g. scripts). Scheduled runs use 90% of `interval_minutes`; next run resumes from where it stopped. |
+| `schedule.worker_nice` | `10` | Unix nice increment for worker process (higher = lower CPU priority). 0 = no change. Helps keep web UI responsive. |
+| `schedule.retention_on_archive_run` | `false` | When true, run retention at end of each archive run. For small archives only; large archives use the daily job. |
+| `schedule.retention_hour` | `3` | Daily retention cleanup hour (0–23, UTC). 3 = 3 AM. |
+| `schedule.retention_minute` | `0` | Daily retention cleanup minute (0–59). |
 | `airports.archive_all` | `false` | Archive every airport on AviationWX.org |
 | `airports.selected` | `[KSPB, KAWO]` | Specific airport codes when archive_all is false |
 | `source.use_history_api` | `true` | Use history API to fetch all frames, download only missing; `false` = current image only per run |
@@ -90,6 +99,10 @@ Any config setting can be overridden via `ARCHIVER_*` environment variables. Env
 | `ARCHIVER_ARCHIVE_RETENTION_MAX_GB` | `archive.retention_max_gb` | `100` |
 | `ARCHIVER_SCHEDULE_INTERVAL_MINUTES` | `schedule.interval_minutes` | `15` |
 | `ARCHIVER_SCHEDULE_FETCH_ON_START` | `schedule.fetch_on_start` | `true` |
+| `ARCHIVER_SCHEDULE_WORKER_NICE` | `schedule.worker_nice` | `10` |
+| `ARCHIVER_SCHEDULE_RETENTION_ON_ARCHIVE_RUN` | `schedule.retention_on_archive_run` | `false` |
+| `ARCHIVER_SCHEDULE_RETENTION_HOUR` | `schedule.retention_hour` | `3` |
+| `ARCHIVER_SCHEDULE_RETENTION_MINUTE` | `schedule.retention_minute` | `0` |
 | `ARCHIVER_SOURCE_API_KEY` | `source.api_key` | `your-key` |
 | `ARCHIVER_AIRPORTS_ARCHIVE_ALL` | `airports.archive_all` | `false` |
 | `ARCHIVER_AIRPORTS_SELECTED` | `airports.selected` | `KSPB,KAWO` |
@@ -160,6 +173,15 @@ make test-ci   # or: make test for tests only
 # Run locally without Docker
 make dev
 ```
+
+For local runs (without Docker), `/archive` may not exist or be writable (e.g. on macOS). Use a writable path such as `/tmp/aviationwx-archive/`:
+
+```bash
+mkdir -p /tmp/aviationwx-archive
+ARCHIVER_ARCHIVE_OUTPUT_DIR=/tmp/aviationwx-archive make dev
+```
+
+Or set `archive.output_dir` in your config file.
 
 ## Docker
 

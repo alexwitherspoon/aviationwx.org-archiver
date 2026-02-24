@@ -247,7 +247,7 @@ def test_archive_stats_counts_files_and_airports():
 
 
 def test_archive_stats_handles_getsize_oserror():
-    """_archive_stats continues when os.path.getsize raises OSError."""
+    """_archive_stats skips files when os.stat raises OSError."""
     with tempfile.TemporaryDirectory() as tmpdir:
         path = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "north_runway")
         os.makedirs(path, exist_ok=True)
@@ -255,12 +255,12 @@ def test_archive_stats_handles_getsize_oserror():
             fh.write(b"data")
 
         with patch(
-            "app.web.os.path.getsize",
+            "app.web.os.stat",
             side_effect=OSError(13, "Permission denied"),
         ):
             stats = _archive_stats(tmpdir)
 
-    assert stats["total_files"] == 1
+    assert stats["total_files"] == 0
     assert stats["total_size_mb"] == 0.0
 
 

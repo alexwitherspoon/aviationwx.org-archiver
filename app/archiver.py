@@ -14,7 +14,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -25,11 +25,18 @@ from app.constants import (
     DEFAULT_REQUEST_DELAY_SECONDS,
     MD5_READ_CHUNK_SIZE,
     MIN_IMAGE_SIZE,
-    SECONDS_PER_DAY,
     SECONDS_PER_MINUTE,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _http_get(config: dict, url: str, **kwargs) -> requests.Response:
+    """GET with session reuse when available (avoids per-request connection setup)."""
+    session = config.get("source", {}).get("_session")
+    if session is not None:
+        return session.get(url, **kwargs)
+    return requests.get(url, **kwargs)
 
 
 def _yield_for_web(config: dict) -> None:
@@ -111,7 +118,7 @@ def _detect_and_set_request_delay(config: dict) -> None:
 
     timeout = source.get("request_timeout", 30)
     try:
-        resp = requests.get(url, timeout=timeout, headers=_api_headers(config))
+        resp = _http_get(config, url, timeout=timeout, headers=_api_headers(config))
         limit_header = resp.headers.get("X-RateLimit-Limit") or resp.headers.get(
             "x-ratelimit-limit"
         )
@@ -194,7 +201,7 @@ def fetch_airport_list(config: dict) -> list[dict]:
     for attempt in range(1, retries + 1):
         _rate_limit(config)
         try:
-            resp = requests.get(url, timeout=timeout, headers=_api_headers(config))
+            resp = _http_get(config, url, timeout=timeout, headers=_api_headers(config))
             resp.raise_for_status()
             data = resp.json()
             # API returns {"airports": [...]} or a bare list
@@ -302,7 +309,9 @@ def fetch_image_urls(airport: dict, config: dict) -> list[str]:
     webcam_api = f"{api_base}/airports/{code}/webcams"
     try:
         _rate_limit(config)
-        resp = requests.get(webcam_api, timeout=timeout, headers=_api_headers(config))
+        resp = _http_get(
+            config, webcam_api, timeout=timeout, headers=_api_headers(config)
+        )
         if resp.ok:
             try:
                 data = resp.json()
@@ -332,7 +341,9 @@ def fetch_image_urls(airport: dict, config: dict) -> list[str]:
     logger.debug("Fetching airport page %s (fallback)", page_url)
     try:
         _rate_limit(config)
-        resp = requests.get(page_url, timeout=timeout, headers=_api_headers(config))
+        resp = _http_get(
+            config, page_url, timeout=timeout, headers=_api_headers(config)
+        )
         if resp.ok:
             urls = _scrape_image_urls(resp.text, base_url)
             if urls:
@@ -403,7 +414,9 @@ def _fetch_webcams_api_response(airport: dict, config: dict) -> dict | None:
 
     try:
         _rate_limit(config)
-        resp = requests.get(webcam_api, timeout=timeout, headers=_api_headers(config))
+        resp = _http_get(
+            config, webcam_api, timeout=timeout, headers=_api_headers(config)
+        )
         if not resp.ok:
             logger.debug(
                 "Webcams API %s returned %s for %s",
@@ -529,7 +542,9 @@ def fetch_history_frames(airport_code: str, webcam: dict, config: dict) -> list[
     timeout = config["source"]["request_timeout"]
     try:
         _rate_limit(config)
-        resp = requests.get(full_url, timeout=timeout, headers=_api_headers(config))
+        resp = _http_get(
+            config, full_url, timeout=timeout, headers=_api_headers(config)
+        )
         if not resp.ok:
             logger.debug(
                 "History API returned %s for %s cam %s",
@@ -592,23 +607,24 @@ def _get_existing_frames(output_dir: str, airport_code: str) -> set[tuple[int, i
 
     History filenames follow: {ts}_{cam}.jpg (or .webp).
     Layout: output_dir/AIRPORT/YYYY/MM/DD/camera_name/
+    Walks only output_dir/AIRPORT to avoid scanning other airports.
     """
     existing: set[tuple[int, int]] = set()
     airport_upper = airport_code.upper()
-    if not os.path.isdir(output_dir):
+    airport_root = os.path.join(output_dir, airport_upper)
+    if not os.path.isdir(airport_root):
         logger.debug(
-            "Output dir %s missing; no existing frames for %s",
-            output_dir,
+            "Airport dir %s missing; no existing frames for %s",
+            airport_root,
             airport_code,
         )
         return existing
 
-    for root, _dirs, files in os.walk(output_dir):
-        rel = os.path.relpath(root, output_dir)
+    for root, _dirs, files in os.walk(airport_root):
+        rel = os.path.relpath(root, airport_root)
         parts = rel.split(os.sep)
-        if len(parts) < 5:
-            continue
-        if parts[0].upper() != airport_upper:
+        # Need YYYY/MM/DD/camera (4 parts) for camera dirs with files
+        if len(parts) < 4:
             continue
         for fname in files:
             base, ext = os.path.splitext(fname)
@@ -849,7 +865,8 @@ def download_image_to_file(url: str, filepath: str, config: dict) -> bool:
             if existing_size > 0:
                 range_headers["Range"] = f"bytes={existing_size}-"
 
-            resp = requests.get(
+            resp = _http_get(
+                config,
                 url,
                 timeout=timeout,
                 stream=True,
@@ -967,8 +984,12 @@ def download_image(url: str, config: dict) -> bytes | None:
     for attempt in range(1, retries + 1):
         _rate_limit(config)
         try:
-            resp = requests.get(
-                url, timeout=timeout, stream=True, headers=_api_headers(config)
+            resp = _http_get(
+                config,
+                url,
+                timeout=timeout,
+                stream=True,
+                headers=_api_headers(config),
             )
 
             # 404/410: image aged out or removed; fail fast, no retry
@@ -1253,7 +1274,9 @@ def _file_md5(path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _collect_archive_files(output_dir: str) -> list[tuple[str, float, int]]:
+def _collect_archive_files(
+    output_dir: str, config: dict | None = None
+) -> list[tuple[str, float, int]]:
     """
     Walk archive directory and return list of (path, mtime, size) for all files.
 
@@ -1271,7 +1294,55 @@ def _collect_archive_files(output_dir: str) -> list[tuple[str, float, int]]:
                 result.append((fpath, stat.st_mtime, stat.st_size))
             except OSError as exc:
                 logger.debug("Retention: could not stat %s: %s", fpath, exc)
+        if config:
+            _yield_for_web(config)
     return result
+
+
+def _oldest_directory_date(output_dir: str) -> datetime | None:
+    """
+    Find the oldest date directory (YYYY/MM/DD) in the archive.
+
+    Walks only the directory structure, no file stats. Used to skip full
+    retention scans when the oldest content is within the retention window.
+    Returns None if empty or no valid date dirs.
+    """
+    oldest: datetime | None = None
+    try:
+        for airport in os.listdir(output_dir):
+            apath = os.path.join(output_dir, airport)
+            if not os.path.isdir(apath) or airport.startswith("."):
+                continue
+            for year in os.listdir(apath):
+                if len(year) != 4 or not year.isdigit():
+                    continue
+                ypath = os.path.join(apath, year)
+                if not os.path.isdir(ypath):
+                    continue
+                for month in os.listdir(ypath):
+                    if len(month) != 2 or not month.isdigit():
+                        continue
+                    mpath = os.path.join(ypath, month)
+                    if not os.path.isdir(mpath):
+                        continue
+                    for day in os.listdir(mpath):
+                        if len(day) != 2 or not day.isdigit():
+                            continue
+                        try:
+                            dt = datetime(
+                                int(year),
+                                int(month),
+                                int(day),
+                                tzinfo=timezone.utc,
+                            )
+                            if oldest is None or dt < oldest:
+                                oldest = dt
+                        except ValueError:
+                            continue
+    except OSError as exc:
+        logger.debug("Retention quick check: %s", exc)
+        return None
+    return oldest
 
 
 def apply_retention(config: dict) -> int:
@@ -1284,6 +1355,8 @@ def apply_retention(config: dict) -> int:
       oldest files first (0 = disabled).
 
     Both can be used together; each rule is applied independently.
+    Returns 0 immediately when both are 0 or unlimited, without scanning.
+    Uses a single directory walk when both rules are enabled.
 
     Returns the number of files deleted.
     """
@@ -1297,9 +1370,10 @@ def apply_retention(config: dict) -> int:
         int(retention_max_gb * BYTES_PER_GIB) if retention_max_gb > 0 else 0
     )
 
+    # Quick exit: 0 or unlimited = disabled; no scan needed
     if retention_days <= 0 and retention_max_bytes <= 0:
         logger.debug(
-            "Retention disabled (retention_days=%s, retention_max_gb=%s)",
+            "Retention disabled (retention_days=%s, retention_max_gb=%s); skipping.",
             retention_days,
             retention_max_gb,
         )
@@ -1315,44 +1389,32 @@ def apply_retention(config: dict) -> int:
         return 0
 
     deleted = 0
+    cutoff_dt = (
+        datetime.now(timezone.utc) - timedelta(days=retention_days)
+        if retention_days > 0
+        else None
+    )
+    cutoff_ts = cutoff_dt.timestamp() if cutoff_dt else 0
 
-    # Phase 1: Delete by age
-    if retention_days > 0:
-        cutoff = datetime.now(timezone.utc).timestamp() - (
-            retention_days * SECONDS_PER_DAY
-        )
-        logger.debug(
-            "Retention: scanning by age (cutoff %d days, before %s)",
-            retention_days,
-            datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat(),
-        )
-        for root, _dirs, files in os.walk(output_dir):
-            for fname in files:
-                if fname == "metadata.json":
-                    continue
-                fpath = os.path.join(root, fname)
+    # When both rules enabled: single walk, apply age then size
+    if retention_days > 0 and retention_max_bytes > 0:
+        files_list = _collect_archive_files(output_dir, config)
+        remaining: list[tuple[str, float, int]] = []
+        for fpath, mtime, size in files_list:
+            if mtime < cutoff_ts:
                 try:
-                    if os.path.getmtime(fpath) < cutoff:
-                        os.remove(fpath)
-                        deleted += 1
+                    os.remove(fpath)
+                    deleted += 1
                 except OSError as exc:
                     logger.warning("Retention: failed to remove %s: %s", fpath, exc)
-
-    # Phase 2: Delete by size (oldest first) until under limit
-    if retention_max_bytes > 0:
-        files_sorted = _collect_archive_files(output_dir)
-        files_sorted.sort(key=lambda x: x[1])  # mtime ascending (oldest first)
-        total_bytes = sum(s for _, _, s in files_sorted)
-        to_remove = total_bytes - retention_max_bytes
-
-        if to_remove > 0:
-            logger.debug(
-                "Retention: total %.1f GB exceeds max %.1f GB; removing oldest",
-                total_bytes / BYTES_PER_GIB,
-                retention_max_bytes / BYTES_PER_GIB,
-            )
+            else:
+                remaining.append((fpath, mtime, size))
+        total_bytes = sum(s for _, _, s in remaining)
+        if total_bytes > retention_max_bytes:
+            remaining.sort(key=lambda x: x[1])
+            to_remove = total_bytes - retention_max_bytes
             removed_bytes = 0
-            for fpath, _mtime, size in files_sorted:
+            for i, (fpath, _mtime, size) in enumerate(remaining):
                 if removed_bytes >= to_remove:
                     break
                 try:
@@ -1361,6 +1423,74 @@ def apply_retention(config: dict) -> int:
                     removed_bytes += size
                 except OSError as exc:
                     logger.warning("Retention: failed to remove %s: %s", fpath, exc)
+                if i > 0 and i % 50 == 0:
+                    _yield_for_web(config)
+    else:
+        # Single rule: use quick checks where possible
+        if retention_days > 0:
+            oldest = _oldest_directory_date(output_dir)
+            if oldest is not None and oldest >= cutoff_dt:
+                logger.debug(
+                    "Retention: oldest dir %s is within %d-day window; "
+                    "no deletion needed.",
+                    oldest.strftime("%Y-%m-%d"),
+                    retention_days,
+                )
+            else:
+                if oldest is not None:
+                    logger.debug(
+                        "Retention: oldest dir %s before cutoff; scanning files.",
+                        oldest.strftime("%Y-%m-%d"),
+                    )
+                logger.debug(
+                    "Retention: scanning by age (cutoff %d days, before %s)",
+                    retention_days,
+                    cutoff_dt.isoformat(),
+                )
+                for root, _dirs, files in os.walk(output_dir):
+                    for fname in files:
+                        if fname == "metadata.json":
+                            continue
+                        fpath = os.path.join(root, fname)
+                        try:
+                            if os.path.getmtime(fpath) < cutoff_ts:
+                                os.remove(fpath)
+                                deleted += 1
+                        except OSError as exc:
+                            logger.warning(
+                                "Retention: failed to remove %s: %s", fpath, exc
+                            )
+                    _yield_for_web(config)
+
+        if retention_max_bytes > 0:
+            files_sorted = _collect_archive_files(output_dir, config)
+            total_bytes = sum(s for _, _, s in files_sorted)
+            if total_bytes <= retention_max_bytes:
+                logger.debug(
+                    "Retention: total %.1f GB under %.1f GB limit; no deletion needed.",
+                    total_bytes / BYTES_PER_GIB,
+                    retention_max_bytes / BYTES_PER_GIB,
+                )
+            else:
+                files_sorted.sort(key=lambda x: x[1])
+                to_remove = total_bytes - retention_max_bytes
+                logger.debug(
+                    "Retention: total %.1f GB exceeds max %.1f GB; removing oldest",
+                    total_bytes / BYTES_PER_GIB,
+                    retention_max_bytes / BYTES_PER_GIB,
+                )
+                removed_bytes = 0
+                for i, (fpath, _mtime, size) in enumerate(files_sorted):
+                    if removed_bytes >= to_remove:
+                        break
+                    try:
+                        os.remove(fpath)
+                        deleted += 1
+                        removed_bytes += size
+                    except OSError as exc:
+                        logger.warning("Retention: failed to remove %s: %s", fpath, exc)
+                    if i > 0 and i % 50 == 0:
+                        _yield_for_web(config)
 
     if deleted:
         reasons = []
@@ -1636,6 +1766,22 @@ def run_archive(
         stats["errors"] += 1
         return stats
 
+    # Reuse HTTP connections across requests (avoids per-request setup overhead)
+    config["source"]["_session"] = requests.Session()
+    try:
+        return _run_archive_impl(config, stats, deadline, run_ts)
+    finally:
+        try:
+            config["source"]["_session"].close()
+        except Exception:
+            pass
+        config["source"].pop("_session", None)
+
+
+def _run_archive_impl(
+    config: dict, stats: dict, deadline: float | None, run_ts: datetime
+) -> dict:
+    """Inner archive logic; assumes _session is already set in config."""
     # Probe API for X-RateLimit-Limit; set delay to 50% of limit (partner or
     # anonymous depending on key validity)
     _detect_and_set_request_delay(config)
@@ -1666,7 +1812,8 @@ def run_archive(
     if deadline is not None and time.time() >= deadline:
         logger.info("Archive run skipped: already past deadline.")
         stats["timed_out"] = True
-        apply_retention(config)
+        if config.get("schedule", {}).get("retention_on_archive_run", False):
+            apply_retention(config)
         return stats
 
     if use_history:
@@ -1737,7 +1884,8 @@ def run_archive(
                 stats["errors"] += 1
             _yield_for_web(config)
 
-    apply_retention(config)
+    if config.get("schedule", {}).get("retention_on_archive_run", False):
+        apply_retention(config)
     logger.info(
         "Archive run complete: %d airport(s), %d image(s) fetched, "
         "%d saved, %d error(s).",

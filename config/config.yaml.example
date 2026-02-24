@@ -8,6 +8,7 @@
 # ============================================================
 archive:
   # Where archived images are saved. Docker: ./archive bind-mounted here.
+  # Local dev (no Docker): use a writable path, e.g. /tmp/aviationwx-archive
   output_dir: /archive
 
   # Layout: output_dir/AIRPORT/metadata.json + YYYY/MM/DD/camera_name/filename (0o644)
@@ -28,6 +29,16 @@ schedule:
 
   # Max minutes per run; next run resumes from where it stopped.
   job_timeout_minutes: 30
+
+  # Unix nice increment for worker process (higher = lower CPU priority). 0 = no change.
+  # worker_nice: 10
+
+  # Retention: runs as separate daily job when retention_days or retention_max_gb > 0.
+  # retention_on_archive_run: when true, also run at end of each archive run (small archives only).
+  # retention_hour, retention_minute: daily cleanup time (UTC). 3 = 3 AM.
+  retention_on_archive_run: false
+  retention_hour: 3
+  retention_minute: 0
 
 # ============================================================
 # AviationWX.org Source

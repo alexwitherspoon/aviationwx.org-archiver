@@ -284,6 +284,35 @@ def test_validate_config_requires_interval_at_least_one():
     assert any("interval" in e.lower() and "1" in e for e in errors)
 
 
+def test_validate_config_rejects_invalid_retention_hour():
+    """Config is invalid when schedule.retention_hour is not 0-23."""
+    from app.config import validate_config
+
+    base = {
+        "archive": {"output_dir": "/archive"},
+        "source": {"airports_api_url": "https://api.example.com/airports"},
+        "airports": {"archive_all": True, "selected": []},
+    }
+    for bad_hour in (-1, 24, 99):
+        config = {**base, "schedule": {"retention_hour": bad_hour}}
+        errors = validate_config(config)
+        assert any("retention_hour" in e or "0" in e for e in errors)
+
+
+def test_validate_config_rejects_invalid_retention_minute():
+    """Config is invalid when schedule.retention_minute is not 0-59."""
+    from app.config import validate_config
+
+    base = {
+        "archive": {"output_dir": "/archive"},
+        "source": {"airports_api_url": "https://api.example.com/airports"},
+        "airports": {"archive_all": True, "selected": []},
+    }
+    config = {**base, "schedule": {"retention_minute": 60}}
+    errors = validate_config(config)
+    assert any("retention_minute" in e for e in errors)
+
+
 # ---------------------------------------------------------------------------
 # Airport selection tests
 # ---------------------------------------------------------------------------
@@ -1133,16 +1162,19 @@ def test_run_archive_calls_detect_and_set_request_delay():
         "airports": {"archive_all": True, "selected": []},
     }
     mock_resp = MagicMock()
+    mock_resp.ok = True
     mock_resp.raise_for_status.return_value = None
     mock_resp.json.return_value = {"airports": []}
 
-    with patch("app.archiver.requests.get", return_value=mock_resp) as mock_get:
+    mock_session = MagicMock()
+    mock_session.get.return_value = mock_resp
+    with patch("app.archiver.requests.Session", return_value=mock_session):
         run_archive(config)
 
     # First call is status (for rate limit probe), second is airports
-    assert mock_get.call_count >= 2
+    assert mock_session.get.call_count >= 2
     # First call should be to /status
-    first_url = mock_get.call_args_list[0][0][0]
+    first_url = mock_session.get.call_args_list[0][0][0]
     assert "status" in first_url
 
 
@@ -1493,6 +1525,58 @@ def test_parse_storage_gb_returns_zero_for_empty_or_invalid():
 # ---------------------------------------------------------------------------
 
 
+def test_oldest_directory_date_returns_min_date():
+    """_oldest_directory_date finds oldest YYYY/MM/DD in archive structure."""
+    from app.archiver import _oldest_directory_date
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # KSPB/2024/06/15/cam/file.jpg and KSPB/2024/06/20/cam/file.jpg
+        os.makedirs(os.path.join(tmpdir, "KSPB", "2024", "06", "15", "cam"))
+        os.makedirs(os.path.join(tmpdir, "KSPB", "2024", "06", "20", "cam"))
+        oldest = _oldest_directory_date(tmpdir)
+    assert oldest is not None
+    assert oldest.year == 2024
+    assert oldest.month == 6
+    assert oldest.day == 15
+
+
+def test_oldest_directory_date_returns_none_when_empty():
+    """_oldest_directory_date returns None when no date dirs."""
+    from app.archiver import _oldest_directory_date
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        assert _oldest_directory_date(tmpdir) is None
+
+
+def test_apply_retention_skips_full_scan_when_oldest_within_window():
+    """apply_retention skips file scan when oldest dir is within retention window."""
+    from app.archiver import apply_retention
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create structure with recent date (today)
+        today = datetime.now(timezone.utc)
+        path = os.path.join(
+            tmpdir,
+            "KSPB",
+            str(today.year),
+            f"{today.month:02d}",
+            f"{today.day:02d}",
+            "cam",
+        )
+        os.makedirs(path)
+        with open(os.path.join(path, "image.jpg"), "wb") as fh:
+            fh.write(b"data")
+
+        config = {
+            "archive": {"output_dir": tmpdir, "retention_days": 7},
+        }
+        with patch("app.archiver.os.walk") as mock_walk:
+            deleted = apply_retention(config)
+        # os.walk should not be called (quick check skipped full scan)
+        mock_walk.assert_not_called()
+        assert deleted == 0
+
+
 def test_apply_retention_zero_means_no_deletion():
     """retention_days=0 should not delete any files."""
     from app.archiver import apply_retention
@@ -1535,6 +1619,16 @@ def test_apply_retention_removes_old_files():
 # ---------------------------------------------------------------------------
 
 
+def _patch_session_for_run_archive(mock_get_or_resp):
+    """Patch requests.Session so run_archive's HTTP calls use the mock."""
+    mock_session = MagicMock()
+    if callable(mock_get_or_resp):
+        mock_session.get.side_effect = lambda url, **kw: mock_get_or_resp(url, **kw)
+    else:
+        mock_session.get.return_value = mock_get_or_resp
+    return patch("app.archiver.requests.Session", return_value=mock_session)
+
+
 def test_run_archive_full_flow_with_mocked_http():
     """run_archive fetches airports, images, and saves them."""
     from app.archiver import run_archive
@@ -1573,7 +1667,7 @@ def test_run_archive_full_flow_with_mocked_http():
                 resp.content = b"\xff\xd8\xff\xe0"
             return resp
 
-        with patch("app.archiver.requests.get", side_effect=mock_get):
+        with _patch_session_for_run_archive(mock_get):
             stats = run_archive(config)
 
         assert stats["airports_processed"] == 1
@@ -1601,7 +1695,7 @@ def test_run_archive_returns_early_when_no_airports_from_api():
     mock_resp.raise_for_status.return_value = None
     mock_resp.json.return_value = {"airports": []}
 
-    with patch("app.archiver.requests.get", return_value=mock_resp):
+    with _patch_session_for_run_archive(mock_resp):
         stats = run_archive(config)
 
     assert stats["airports_processed"] == 0
@@ -1627,7 +1721,7 @@ def test_run_archive_warns_when_no_airports_selected():
     mock_resp.raise_for_status.return_value = None
     mock_resp.json.return_value = {"airports": [{"id": "kspb"}]}
 
-    with patch("app.archiver.requests.get", return_value=mock_resp):
+    with _patch_session_for_run_archive(mock_resp):
         with patch("app.archiver.logger") as mock_logger:
             stats = run_archive(config)
 
@@ -1663,7 +1757,7 @@ def test_run_archive_logs_warning_when_zero_images_fetched():
             resp.text = "<html></html>"
         return resp
 
-    with patch("app.archiver.requests.get", side_effect=mock_get):
+    with _patch_session_for_run_archive(mock_get):
         with patch("app.archiver.logger") as mock_logger:
             stats = run_archive(config)
 
@@ -1891,7 +1985,7 @@ def test_run_archive_skips_airport_with_no_code():
             resp.content = b"\xff\xd8\xff"
         return resp
 
-    with patch("app.archiver.requests.get", side_effect=mock_get):
+    with _patch_session_for_run_archive(mock_get):
         stats = run_archive(config)
 
     assert stats["airports_processed"] == 1
@@ -1937,7 +2031,7 @@ def test_run_archive_use_history_false_uses_current_only():
                 resp.content = b"\xff\xd8\xff\xe0"
             return resp
 
-        with patch("app.archiver.requests.get", side_effect=mock_get):
+        with _patch_session_for_run_archive(mock_get):
             stats = run_archive(config)
 
         assert stats["airports_processed"] == 1
@@ -2001,7 +2095,7 @@ def test_run_archive_history_mode_downloads_missing_frames():
                 resp.content = b"\xff\xd8\xff\xe0"
             return resp
 
-        with patch("app.archiver.requests.get", side_effect=mock_get):
+        with _patch_session_for_run_archive(mock_get):
             stats = run_archive(config)
 
         assert stats["airports_processed"] == 1
@@ -2032,10 +2126,13 @@ def test_run_archive_stops_at_deadline():
 
     mock_resp = MagicMock()
     mock_resp.ok = True
+    mock_resp.status_code = 200
+    mock_resp.raise_for_status = MagicMock(return_value=None)
     mock_resp.json.return_value = {"airports": [{"id": "kspb", "icao": "KSPB"}]}
 
-    with patch("app.archiver.requests.get", return_value=mock_resp):
-        stats = run_archive(config, deadline=0)
+    with patch("app.archiver._http_get", return_value=mock_resp):
+        with patch("app.archiver.requests.Session", return_value=MagicMock()):
+            stats = run_archive(config, deadline=0)
 
     assert stats.get("timed_out") is True
 
@@ -2071,7 +2168,7 @@ def test_run_archive_warns_when_fetched_but_none_saved():
                 }
             return resp
 
-        with patch("app.archiver.requests.get", side_effect=mock_get):
+        with _patch_session_for_run_archive(mock_get):
             with patch("app.archiver.save_image_from_url", return_value=None):
                 with patch("app.archiver.logger") as mock_logger:
                     stats = run_archive(config)
@@ -2315,7 +2412,7 @@ def test_apply_retention_by_days_and_size_both_applied():
 
 
 def test_run_archive_applies_retention_including_max_gb():
-    """run_archive calls apply_retention with config including retention_max_gb."""
+    """run_archive calls apply_retention when retention_on_archive_run is True."""
     from app.archiver import run_archive
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -2332,6 +2429,7 @@ def test_run_archive_applies_retention_including_max_gb():
                 "retention_days": 7,
                 "retention_max_gb": 50,
             },
+            "schedule": {"retention_on_archive_run": True},
             "airports": {"archive_all": False, "selected": ["KSPB"]},
         }
 
@@ -2349,7 +2447,7 @@ def test_run_archive_applies_retention_including_max_gb():
                 resp.content = b"\xff\xd8\xff"
             return resp
 
-        with patch("app.archiver.requests.get", side_effect=mock_get):
+        with _patch_session_for_run_archive(mock_get):
             with patch("app.archiver.apply_retention") as mock_retention:
                 mock_retention.return_value = 0
                 run_archive(config)
@@ -2358,6 +2456,49 @@ def test_run_archive_applies_retention_including_max_gb():
         call_config = mock_retention.call_args[0][0]
         assert call_config["archive"]["retention_max_gb"] == 50
         assert call_config["archive"]["retention_days"] == 7
+
+
+def test_run_archive_skips_retention_when_retention_on_archive_run_false():
+    """run_archive skips apply_retention when retention_on_archive_run is False."""
+    from app.archiver import run_archive
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {
+            "source": {
+                "base_url": "https://aviationwx.org",
+                "airports_api_url": "https://api.example.com/v1/airports",
+                "request_timeout": 5,
+                "max_retries": 1,
+                "retry_delay": 0,
+            },
+            "archive": {
+                "output_dir": tmpdir,
+                "retention_days": 7,
+                "retention_max_gb": 50,
+            },
+            "schedule": {"retention_on_archive_run": False},
+            "airports": {"archive_all": False, "selected": ["KSPB"]},
+        }
+
+        def mock_get(url, **kwargs):
+            resp = MagicMock()
+            resp.ok = True
+            resp.raise_for_status.return_value = None
+            if "airports" in url and "webcams" not in url:
+                resp.json.return_value = {"airports": [{"code": "KSPB"}]}
+            elif "webcams" in url:
+                resp.json.return_value = {"webcams": []}
+                resp.text = "<html></html>"
+            else:
+                resp.headers = {"content-type": "image/jpeg"}
+                resp.content = b"\xff\xd8\xff"
+            return resp
+
+        with _patch_session_for_run_archive(mock_get):
+            with patch("app.archiver.apply_retention") as mock_retention:
+                run_archive(config)
+
+        mock_retention.assert_not_called()
 
 
 def test_apply_retention_logs_warning_on_remove_failure():
@@ -2459,7 +2600,8 @@ def test_config_page_returns_200(flask_client):
 
 def test_trigger_archive_redirects(flask_client):
     """Valid config: trigger redirects to dashboard."""
-    resp = flask_client.post("/run")
+    with patch("app.web.trigger_run", return_value=True):
+        resp = flask_client.post("/run")
     assert resp.status_code == 302
     loc = resp.headers.get("Location", "")
     assert loc.endswith("/") or "dashboard" in loc

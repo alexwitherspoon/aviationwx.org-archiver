@@ -32,6 +32,10 @@ LABEL org.opencontainers.image.title="AviationWX.org Archiver" \
 # Create a non-root user for security
 RUN groupadd -r archiver && useradd -r -g archiver -d /app -s /sbin/nologin archiver
 
+# Install gosu for clean privilege drop in entrypoint
+RUN apt-get update && apt-get install -y --no-install-recommends gosu \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy installed packages from the deps stage
@@ -47,7 +51,10 @@ COPY main.py .
 RUN mkdir -p /archive /config \
  && chown -R archiver:archiver /archive /config /app
 
-USER archiver
+# Entrypoint fixes volume permissions (chown) before dropping to archiver user
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
 
 # Web GUI port
 EXPOSE 8080

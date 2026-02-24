@@ -7,6 +7,7 @@ Starts the background scheduler and optionally the Flask web GUI.
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import os
 import sys
 import time
@@ -78,4 +79,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    multiprocessing.set_start_method("spawn", force=True)
     main()
