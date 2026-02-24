@@ -1,7 +1,7 @@
 """
 AviationWX.org Archiver — application entry point.
 
-Starts the background scheduler and the Flask web GUI.
+Starts the background scheduler and optionally the Flask web GUI.
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 
 from app.config import check_host_resources, load_config
 from app.scheduler import start_scheduler
@@ -47,14 +48,19 @@ def main() -> None:
     app.config["ARCHIVER_CONFIG"] = config
     scheduler = start_scheduler(lambda: app.config["ARCHIVER_CONFIG"])
 
-    host = config["web"]["host"]
-    port = int(config["web"]["port"])
-
-    host_display = host if host != "0.0.0.0" else "localhost"
-    logger.info("Web GUI available at http://%s:%d", host_display, port)
+    web_enabled = config["web"].get("enabled", True)
 
     try:
-        app.run(host=host, port=port, debug=False, use_reloader=False)
+        if web_enabled:
+            host = config["web"]["host"]
+            port = int(config["web"]["port"])
+            host_display = host if host != "0.0.0.0" else "localhost"
+            logger.info("Web GUI available at http://%s:%d", host_display, port)
+            app.run(host=host, port=port, debug=False, use_reloader=False)
+        else:
+            logger.info("Web UI disabled; running scheduler only.")
+            while True:
+                time.sleep(3600)
     finally:
         scheduler.shutdown(wait=False)
         logger.info("Archiver shut down.")

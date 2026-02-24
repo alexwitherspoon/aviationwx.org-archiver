@@ -70,6 +70,9 @@ airports:
 # Web GUI
 # ============================================================
 web:
+  # Set to false in secure environments where the GUI should not run
+  enabled: true
+
   # Web GUI port
   port: 8080
 
