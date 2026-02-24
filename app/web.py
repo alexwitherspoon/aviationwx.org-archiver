@@ -7,18 +7,35 @@ Provides a local web interface for:
   - Browse: explore archived images by date and airport
 """
 
+from __future__ import annotations
+
 import logging
 import os
+import shutil
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 
 from app.config import save_config, validate_config
+from app.constants import (
+    BYTES_PER_GIB,
+    BYTES_PER_MIB,
+    DEFAULT_INTERVAL_MINUTES,
+    DEFAULT_LOG_DISPLAY_COUNT,
+    PERCENT_SCALE,
+)
 from app.scheduler import get_state, trigger_run
+from app.version import GIT_SHA, VERSION
 
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+
+@app.context_processor
+def _inject_version():
+    """Make version and git_sha available in all templates."""
+    return {"app_version": VERSION, "app_git_sha": GIT_SHA}
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +78,28 @@ def _archive_tree(output_dir: str) -> dict:
     return tree
 
 
+def _disk_usage(path: str) -> dict | None:
+    """
+    Return disk usage for the filesystem containing path.
+
+    Returns dict with used_gb, total_gb, free_gb, percent_used, or None on error.
+    """
+    try:
+        usage = shutil.disk_usage(path)
+        total_gb = usage.total / BYTES_PER_GIB
+        used_gb = usage.used / BYTES_PER_GIB
+        free_gb = usage.free / BYTES_PER_GIB
+        percent = (usage.used / usage.total * PERCENT_SCALE) if usage.total else 0
+        return {
+            "used_gb": round(used_gb, 2),
+            "total_gb": round(total_gb, 2),
+            "free_gb": round(free_gb, 2),
+            "percent_used": round(percent, 1),
+        }
+    except OSError:
+        return None
+
+
 def _archive_stats(output_dir: str) -> dict:
     """Return basic stats about the archive directory."""
     total_files = 0
@@ -68,7 +107,12 @@ def _archive_stats(output_dir: str) -> dict:
     airports: set = set()
 
     if not os.path.isdir(output_dir):
-        return {"total_files": 0, "total_size_mb": 0.0, "airports": []}
+        return {
+            "total_files": 0,
+            "total_size_mb": 0.0,
+            "airports": [],
+            "disk_usage": _disk_usage(os.path.dirname(output_dir) or "/"),
+        }
 
     for root, _dirs, files in os.walk(output_dir):
         for fname in files:
@@ -85,8 +129,9 @@ def _archive_stats(output_dir: str) -> dict:
 
     return {
         "total_files": total_files,
-        "total_size_mb": round(total_size / (1024 * 1024), 2),
+        "total_size_mb": round(total_size / BYTES_PER_MIB, 2),
         "airports": sorted(airports),
+        "disk_usage": _disk_usage(output_dir),
     }
 
 
@@ -102,7 +147,7 @@ def dashboard():
     state = get_state()
     output_dir = config["archive"]["output_dir"]
     archive_stats = _archive_stats(output_dir)
-    log_count = config["web"].get("log_display_count", 100)
+    log_count = config["web"].get("log_display_count", DEFAULT_LOG_DISPLAY_COUNT)
     recent_logs = list(reversed(state.get("log_entries", [])))[:log_count]
     return render_template(
         "dashboard.html",
@@ -168,22 +213,25 @@ def api_status():
     config = app.config["ARCHIVER_CONFIG"]
     output_dir = config["archive"]["output_dir"]
     archive_stats = _archive_stats(output_dir)
-    return jsonify(
-        {
-            "status": "ok",
-            "running": state.get("running", False),
-            "last_run": (
-                state.get("last_run").isoformat() if state.get("last_run") else None
-            ),
-            "next_run": (
-                state.get("next_run").isoformat() if state.get("next_run") else None
-            ),
-            "run_count": state.get("run_count", 0),
-            "last_stats": state.get("last_stats"),
-            "archive": archive_stats,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    )
+    response = {
+        "status": "ok",
+        "version": VERSION,
+        "git_sha": GIT_SHA or None,
+        "running": state.get("running", False),
+        "last_run": (
+            state.get("last_run").isoformat() if state.get("last_run") else None
+        ),
+        "next_run": (
+            state.get("next_run").isoformat() if state.get("next_run") else None
+        ),
+        "run_count": state.get("run_count", 0),
+        "last_stats": state.get("last_stats"),
+        "archive": archive_stats,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if archive_stats.get("disk_usage"):
+        response["disk_usage"] = archive_stats["disk_usage"]
+    return jsonify(response)
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +246,7 @@ def _form_to_config(form, existing_config: dict) -> dict:
     config = copy.deepcopy(existing_config)
 
     # Schedule
-    interval = int(form.get("interval_minutes", 15))
+    interval = int(form.get("interval_minutes", DEFAULT_INTERVAL_MINUTES))
     if interval < 1:
         raise ValueError("interval_minutes must be >= 1")
     config["schedule"]["interval_minutes"] = interval
@@ -229,6 +277,10 @@ def _form_to_config(form, existing_config: dict) -> dict:
     base_url = form.get("base_url", "").strip()
     if base_url:
         config["source"]["base_url"] = base_url
+
+    api_key = form.get("api_key", "").strip()
+    if api_key:
+        config["source"]["api_key"] = api_key
 
     # Logging
     log_level = form.get("log_level", "INFO").strip().upper()

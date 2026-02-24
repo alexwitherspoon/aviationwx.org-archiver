@@ -13,6 +13,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.archiver import run_archive
 from app.config import validate_config
+from app.constants import DEFAULT_INTERVAL_MINUTES
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +82,13 @@ def _archive_job(config: dict) -> None:
             _state["last_stats"] = stats
             _state["run_count"] += 1
             _state["running"] = False
+        suffix = (
+            " (stopped at timeout, will resume next run)"
+            if stats.get("timed_out")
+            else ""
+        )
         _append_log(
-            f"Archive run complete — airports: {stats['airports_processed']}, "
+            f"Archive run complete{suffix} — airports: {stats['airports_processed']}, "
             f"images fetched: {stats['images_fetched']}, "
             f"saved: {stats['images_saved']}, "
             f"errors: {stats['errors']}.",
@@ -117,7 +123,9 @@ def start_scheduler(config_getter) -> BackgroundScheduler:
         _archive_job(config)
 
     config = config_getter()
-    interval_minutes = config["schedule"].get("interval_minutes", 15)
+    interval_minutes = config["schedule"].get(
+        "interval_minutes", DEFAULT_INTERVAL_MINUTES
+    )
 
     scheduler = BackgroundScheduler(daemon=True)
     scheduler.add_job(
@@ -156,9 +164,11 @@ def trigger_run(config: dict) -> bool:
         True if the run was started, False if already running or config invalid.
     """
     if validate_config(config):
+        logger.debug("Trigger skipped: config validation failed.")
         return False
     with _state_lock:
         if _state["running"]:
+            logger.debug("Trigger skipped: archive run already in progress.")
             return False
     threading.Thread(target=_archive_job, args=[config], daemon=True).start()
     return True
