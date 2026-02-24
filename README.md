@@ -8,7 +8,7 @@ Part of the [AviationWX.org](https://github.com/alexwitherspoon/aviationwx) proj
 
 - **Automated archiving** — fetches images from all or selected airports on a configurable schedule
 - **History API mode** — uses AviationWX history API to download all available frames, only missing ones; run every 15 min captures ~15 images per webcam (60s refresh)
-- **Organised storage** — files saved as `archive/YYYY/MM/DD/AIRPORT_CODE/filename`
+- **Organised storage** — files saved as `archive/AIRPORT_CODE/YYYY/MM/DD/filename`
 - **Single config file** — one YAML file drives the entire system (stored in named volume)
 - **Environment variable overrides** — configure via `ARCHIVER_*` env vars
 - **Web GUI** — local dashboard for monitoring, configuration, and browsing the archive
@@ -114,14 +114,17 @@ docker run -d \
 
 ```
 archive/
-└── 2024/
-    └── 06/
-        └── 15/
-            ├── KSPB/
-            │   ├── 20240615_143000_webcam.jpg
-            │   ├── 20240615_150000_webcam.jpg
-            │   └── 1718456780_0.jpg   # history mode: {timestamp}_{cam}.jpg
-            └── KAWO/
+├── KSPB/
+│   └── 2024/
+│       └── 06/
+│           └── 15/
+│               ├── 20240615_143000_webcam.jpg
+│               ├── 20240615_150000_webcam.jpg
+│               └── 1718456780_0.jpg   # history mode: {timestamp}_{cam}.jpg
+└── KAWO/
+    └── 2024/
+        └── 06/
+            └── 15/
                 └── 20240615_143001_snapshot.webp
 ```
 
@@ -130,7 +133,7 @@ archive/
 The local web interface (default `http://localhost:8080`) provides:
 
 - **Dashboard** — archive statistics, last/next run times, live log stream, manual trigger
-- **Browse** — explore archived images by year → month → day → airport
+- **Browse** — explore archived images by airport → year → month → day
 - **Config** — edit all settings through a form (no file editing needed)
 - **API** — `GET /api/status` returns JSON status for health checks and monitoring
 

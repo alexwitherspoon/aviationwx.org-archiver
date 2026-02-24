@@ -778,7 +778,7 @@ def test_download_image_returns_none_after_all_retries_fail():
 
 
 def test_save_image_creates_directory_structure():
-    """save_image creates year/month/day/airport subdirectories."""
+    """save_image creates airport/year/month/day subdirectories."""
     from app.archiver import save_image
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1317,7 +1317,7 @@ def test_get_existing_frames_finds_history_files():
     from app.archiver import _get_existing_frames
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        path = os.path.join(tmpdir, "2024", "01", "15", "KSPB")
+        path = os.path.join(tmpdir, "KSPB", "2024", "01", "15")
         os.makedirs(path, exist_ok=True)
         with open(os.path.join(path, "1700000000_0.jpg"), "wb") as f:
             f.write(b"x")
@@ -1334,7 +1334,7 @@ def test_get_existing_frames_finds_history_files():
 
 
 def test_save_history_image_creates_correct_structure():
-    """save_history_image creates output_dir/YYYY/MM/DD/AIRPORT/{ts}_{cam}.jpg."""
+    """save_history_image creates output_dir/AIRPORT/YYYY/MM/DD/{ts}_{cam}.jpg."""
     from app.archiver import save_history_image
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1543,7 +1543,10 @@ def test_run_archive_history_mode_downloads_missing_frames():
         assert stats["images_fetched"] >= 1
         assert stats["images_saved"] >= 1
         assert stats["errors"] == 0
-        assert any("2023" in d for d in os.listdir(tmpdir))
+        assert "KSPB" in os.listdir(tmpdir)
+        # 1700000000 -> 2023-11-14 UTC
+        kspb_path = os.path.join(tmpdir, "KSPB", "2023", "11", "14")
+        assert os.path.isdir(kspb_path)
 
 
 def test_run_archive_stops_at_deadline():
@@ -1702,14 +1705,14 @@ def test_apply_retention_by_size_removes_oldest_first():
 
 
 def test_apply_retention_by_size_works_with_nested_archive_structure():
-    """apply_retention by size works with YYYY/MM/DD/AIRPORT/ directory structure."""
+    """apply_retention by size works with AIRPORT/YYYY/MM/DD/ directory structure."""
     import time
 
     from app.archiver import apply_retention
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Mimic archive layout: 2024/01/15/KSPB/file.jpg
-        archive_path = os.path.join(tmpdir, "2024", "01", "15", "KSPB")
+        # Mimic archive layout: KSPB/2024/01/15/file.jpg
+        archive_path = os.path.join(tmpdir, "KSPB", "2024", "01", "15")
         os.makedirs(archive_path, exist_ok=True)
         for i in range(3):
             fpath = os.path.join(archive_path, f"frame_{i}.jpg")

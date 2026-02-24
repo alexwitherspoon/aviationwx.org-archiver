@@ -3,34 +3,56 @@
 
 {% block content %}
 <h1>Browse Archive</h1>
-<p class="subtitle">Explore archived images organised by year / month / day / airport</p>
+<p class="subtitle">Explore archived images organised by airport / year / month / day</p>
+
+<style>
+  .file-link { color: var(--accent); text-decoration: none; }
+  .file-link:hover { text-decoration: underline; }
+</style>
+<div id="preview-panel" class="card" style="display:none; margin-bottom:24px;">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+    <div>
+      <h2 style="margin-bottom:4px;">Preview</h2>
+      <p id="preview-filename" style="color:var(--text-muted); font-size:12px;"></p>
+    </div>
+    <a id="preview-download-btn" href="" download="" class="btn primary" style="display:inline-block; padding:8px 16px; text-decoration:none; border-radius:6px; font-size:13px; font-weight:500;">Download</a>
+  </div>
+  <div id="preview-content" style="max-width:100%; overflow:auto;">
+    <img id="preview-image" src="" alt="Preview" style="max-width:100%; max-height:70vh; display:block; border-radius:4px;">
+  </div>
+  <p id="preview-non-image" style="display:none; color:var(--text-muted); font-size:13px;">
+    No preview available for this file type.
+  </p>
+</div>
 
 {% if not tree %}
   <div class="card">
     <p class="empty">No archived images found yet. Run the archiver from the <a href="{{ url_for('dashboard') }}">Dashboard</a> to get started.</p>
   </div>
 {% else %}
-  {% for year, months in tree.items() %}
+  {% for airport, years in tree.items() %}
   <details open>
-    <summary class="card" style="margin-bottom:4px; font-weight:600; font-size:15px;">📅 {{ year }}</summary>
-    {% for month, days in months.items() %}
+    <summary class="card" style="margin-bottom:4px; font-weight:600; font-size:15px;">✈ {{ airport }}</summary>
+    {% for year, months in years.items() %}
     <details style="margin-left:16px;">
       <summary class="card" style="margin-bottom:4px; font-weight:500;">
-        {{ year }}-{{ month }}
+        {{ year }}
         <span class="badge badge-info" style="margin-left:8px">
-          {{ days.values() | map('length') | list | sum }} file(s)
+          {% set ns = namespace(count=0) %}
+          {% for month_data in months.values() %}
+          {% for day, files in month_data.items() %}
+          {% set ns.count = ns.count + (files|length) %}
+          {% endfor %}
+          {% endfor %}
+          {{ ns.count }} file(s)
         </span>
       </summary>
-      {% for day, airports in days.items() %}
+      {% for month, days in months.items() %}
       <details style="margin-left:16px;">
         <summary class="card" style="margin-bottom:4px;">
-          {{ year }}-{{ month }}-{{ day }}
-          &nbsp;&mdash;&nbsp;
-          {% for airport in airports.keys() %}
-            <span class="badge badge-info">{{ airport }}</span>
-          {% endfor %}
+          {{ year }}-{{ month }}
         </summary>
-        {% for airport, files in airports.items() %}
+        {% for day, files in days.items() %}
         <div class="card" style="margin-left:16px; margin-bottom:8px;">
           <h2>{{ airport }} &mdash; {{ year }}-{{ month }}-{{ day }}</h2>
           {% if files %}
@@ -44,9 +66,16 @@
                 </thead>
                 <tbody>
                   {% for fname in files %}
-                  <tr style="border-bottom:1px solid var(--border);">
+                  <tr style="border-bottom:1px solid var(--border);" class="file-row">
                     <td style="padding:4px 8px; color:var(--text-muted);">{{ loop.index }}</td>
-                    <td style="padding:4px 8px;">{{ fname }}</td>
+                    <td style="padding:4px 8px;">
+                      <a href="{{ url_for('serve_archive_file', subpath=airport ~ '/' ~ year ~ '/' ~ month ~ '/' ~ day ~ '/' ~ fname) }}"
+                         class="file-link"
+                         data-path="{{ airport }}/{{ year }}/{{ month }}/{{ day }}/{{ fname }}"
+                         data-filename="{{ fname }}">
+                        {{ fname }}
+                      </a>
+                    </td>
                   </tr>
                   {% endfor %}
                 </tbody>
@@ -64,4 +93,41 @@
   </details>
   {% endfor %}
 {% endif %}
+
+<script>
+(function() {
+  const panel = document.getElementById('preview-panel');
+  const img = document.getElementById('preview-image');
+  const filenameEl = document.getElementById('preview-filename');
+  const nonImageEl = document.getElementById('preview-non-image');
+  const downloadBtn = document.getElementById('preview-download-btn');
+
+  document.querySelectorAll('.file-link').forEach(function(link) {
+    link.addEventListener('click', function(e) {
+      e.preventDefault();
+      const url = this.getAttribute('href');
+      const filename = this.getAttribute('data-filename');
+      const ext = filename.split('.').pop().toLowerCase();
+      const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'];
+
+      panel.style.display = 'block';
+      filenameEl.textContent = filename;
+      downloadBtn.href = url;
+      downloadBtn.download = filename;
+
+      if (imageExts.includes(ext)) {
+        img.style.display = 'block';
+        img.src = url;
+        nonImageEl.style.display = 'none';
+      } else {
+        img.style.display = 'none';
+        img.src = '';
+        nonImageEl.style.display = 'block';
+      }
+
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+})();
+</script>
 {% endblock %}

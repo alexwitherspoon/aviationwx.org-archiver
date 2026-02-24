@@ -2,7 +2,7 @@
 AviationWX.org Archiver - Core image fetching and archival logic.
 
 Fetches webcam images from AviationWX.org and organises them on disk as:
-    <output_dir>/<YYYY>/<MM>/<DD>/<AIRPORT_CODE>/<filename>
+    <output_dir>/<AIRPORT_CODE>/<YYYY>/<MM>/<DD>/<filename>
 """
 
 from __future__ import annotations
@@ -411,6 +411,7 @@ def _get_existing_frames(output_dir: str, airport_code: str) -> set[tuple[int, i
     Scan archive for existing frames and return set of (timestamp, cam_index).
 
     History filenames follow: {ts}_{cam}.jpg (or .webp).
+    Layout: output_dir/AIRPORT/YYYY/MM/DD/
     """
     existing: set[tuple[int, int]] = set()
     airport_upper = airport_code.upper()
@@ -427,7 +428,7 @@ def _get_existing_frames(output_dir: str, airport_code: str) -> set[tuple[int, i
         parts = rel.split(os.sep)
         if len(parts) < 4:
             continue
-        if parts[-1].upper() != airport_upper:
+        if parts[0].upper() != airport_upper:
             continue
         for fname in files:
             base, ext = os.path.splitext(fname)
@@ -568,16 +569,17 @@ def save_history_image(
     """
     Save a history API frame to the archive.
 
-    Filename: {ts}_{cam}.jpg for uniqueness. Directory: output_dir/YYYY/MM/DD/AIRPORT/
+    Filename: {ts}_{cam}.jpg for uniqueness.
+    Directory: output_dir/AIRPORT/YYYY/MM/DD/
     """
     output_dir = config["archive"]["output_dir"]
     dt = datetime.fromtimestamp(frame_ts, tz=timezone.utc)
     date_path = os.path.join(
         output_dir,
+        airport_code.upper(),
         dt.strftime("%Y"),
         dt.strftime("%m"),
         dt.strftime("%d"),
-        airport_code.upper(),
     )
 
     try:
@@ -622,7 +624,7 @@ def save_image(
     """
     Save image bytes to the archive directory.
 
-    Directory structure: <output_dir>/<YYYY>/<MM>/<DD>/<AIRPORT_CODE>/<filename>
+    Directory structure: <output_dir>/<AIRPORT_CODE>/<YYYY>/<MM>/<DD>/<filename>
 
     The filename is derived from the URL basename; a timestamp prefix is added
     to avoid collisions when the same URL is fetched repeatedly.
@@ -635,10 +637,10 @@ def save_image(
     output_dir = config["archive"]["output_dir"]
     date_path = os.path.join(
         output_dir,
+        airport_code.upper(),
         timestamp.strftime("%Y"),
         timestamp.strftime("%m"),
         timestamp.strftime("%d"),
-        airport_code.upper(),
     )
 
     try:

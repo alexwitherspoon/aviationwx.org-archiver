@@ -4,7 +4,7 @@ AviationWX.org Archiver - Flask web GUI.
 Provides a local web interface for:
   - Dashboard: status, stats, and recent log entries
   - Configuration: view and edit config.yaml via a form
-  - Browse: explore archived images by date and airport
+  - Browse: explore archived images by airport and date
 """
 
 from __future__ import annotations
@@ -14,7 +14,16 @@ import os
 import shutil
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import (
+    Flask,
+    abort,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    url_for,
+)
 
 from app.config import save_config, validate_config
 from app.constants import (
@@ -49,33 +58,34 @@ def _archive_tree(output_dir: str) -> dict:
     """
     Build a nested dict representing the archive directory tree.
 
-    Structure: {year: {month: {day: {airport: [filenames]}}}}
+    Structure: {airport: {year: {month: {day: [filenames]}}}}
+    Layout: output_dir/AIRPORT/YYYY/MM/DD/
     """
     tree = {}
     if not os.path.isdir(output_dir):
         return tree
 
-    for year in sorted(os.listdir(output_dir)):
-        year_path = os.path.join(output_dir, year)
-        if not os.path.isdir(year_path) or not year.isdigit():
+    for airport in sorted(os.listdir(output_dir)):
+        airport_path = os.path.join(output_dir, airport)
+        if not os.path.isdir(airport_path):
             continue
-        tree[year] = {}
-        for month in sorted(os.listdir(year_path)):
-            month_path = os.path.join(year_path, month)
-            if not os.path.isdir(month_path) or not month.isdigit():
+        tree[airport] = {}
+        for year in sorted(os.listdir(airport_path)):
+            year_path = os.path.join(airport_path, year)
+            if not os.path.isdir(year_path) or not year.isdigit():
                 continue
-            tree[year][month] = {}
-            for day in sorted(os.listdir(month_path)):
-                day_path = os.path.join(month_path, day)
-                if not os.path.isdir(day_path) or not day.isdigit():
+            tree[airport][year] = {}
+            for month in sorted(os.listdir(year_path)):
+                month_path = os.path.join(year_path, month)
+                if not os.path.isdir(month_path) or not month.isdigit():
                     continue
-                tree[year][month][day] = {}
-                for airport in sorted(os.listdir(day_path)):
-                    airport_path = os.path.join(day_path, airport)
-                    if not os.path.isdir(airport_path):
+                tree[airport][year][month] = {}
+                for day in sorted(os.listdir(month_path)):
+                    day_path = os.path.join(month_path, day)
+                    if not os.path.isdir(day_path) or not day.isdigit():
                         continue
-                    files = sorted(os.listdir(airport_path))
-                    tree[year][month][day][airport] = files
+                    files = sorted(os.listdir(day_path))
+                    tree[airport][year][month][day] = files
 
     return tree
 
@@ -169,10 +179,10 @@ def _archive_stats(output_dir: str) -> dict:
             try:
                 total_files += 1
                 total_size += os.path.getsize(fpath)
-                # archive: output_dir/YYYY/MM/DD/AIRPORT/file — airport is parent
+                # archive: output_dir/AIRPORT/YYYY/MM/DD/file — airport is first
                 parts = fpath.replace(output_dir, "").strip(os.sep).split(os.sep)
-                if len(parts) >= 2:
-                    airports.add(parts[-2])
+                if len(parts) >= 1:
+                    airports.add(parts[0])
             except OSError as exc:
                 logger.debug("Could not stat %s: %s", fpath, exc)
 
@@ -247,6 +257,24 @@ def configuration():
         message=message,
         error=error,
         config_errors=config_errors,
+    )
+
+
+@app.route("/archive/<path:subpath>")
+def serve_archive_file(subpath: str):
+    """Serve a file from the archive directory. Safe against path traversal."""
+    config = app.config["ARCHIVER_CONFIG"]
+    output_dir = config["archive"]["output_dir"]
+    full_path = os.path.normpath(os.path.join(output_dir, subpath))
+    if not os.path.realpath(full_path).startswith(os.path.realpath(output_dir)):
+        abort(404)
+    if not os.path.isfile(full_path):
+        abort(404)
+    return send_file(
+        full_path,
+        mimetype=None,
+        as_attachment=False,
+        download_name=os.path.basename(full_path),
     )
 
 

@@ -10,7 +10,7 @@ archive:
   # Where archived images are saved. Docker: ./archive bind-mounted here.
   output_dir: /archive
 
-  # Layout: output_dir/YYYY/MM/DD/AIRPORT/filename
+  # Layout: output_dir/AIRPORT/YYYY/MM/DD/filename
 
   # Retention days (0 = unlimited)
   retention_days: 0      # Days to keep (0 = unlimited)
