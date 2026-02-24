@@ -571,6 +571,7 @@ def save_history_image(
 
     Filename: {ts}_{cam}.jpg for uniqueness.
     Directory: output_dir/AIRPORT/YYYY/MM/DD/
+    Files are created with mode 0o644 (owner rw, group/others r).
     """
     output_dir = config["archive"]["output_dir"]
     dt = datetime.fromtimestamp(frame_ts, tz=timezone.utc)
@@ -601,6 +602,7 @@ def save_history_image(
     try:
         with open(filepath, "wb") as fh:
             fh.write(image_data)
+        os.chmod(filepath, 0o644)
         logger.info(
             "Archived history frame %s cam %s @ %s -> %s",
             airport_code,
@@ -628,6 +630,7 @@ def save_image(
 
     The filename is derived from the URL basename; a timestamp prefix is added
     to avoid collisions when the same URL is fetched repeatedly.
+    Files are created with mode 0o644 (owner rw, group/others r).
 
     Returns the saved file path on success, or None on failure.
     """
@@ -666,6 +669,7 @@ def save_image(
     try:
         with open(filepath, "wb") as fh:
             fh.write(image_data)
+        os.chmod(filepath, 0o644)
         logger.info("Archived %s -> %s", url, filepath)
         return filepath
     except OSError as exc:

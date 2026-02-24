@@ -859,6 +859,26 @@ def test_save_image_handles_url_without_path_basename():
         assert "image" in os.path.basename(path)
 
 
+def test_save_image_sets_file_permissions_0644():
+    """save_image creates files with mode 0o644 (owner rw, group/others r)."""
+    import stat
+
+    from app.archiver import save_image
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {"archive": {"output_dir": tmpdir}, "source": {}}
+        data = b"\xff\xd8\xff"
+        ts = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
+
+        path = save_image(
+            data, "http://example.com/webcam.jpg", "KSPB", config, timestamp=ts
+        )
+
+        assert path is not None
+        mode = os.stat(path).st_mode
+        assert stat.S_IMODE(mode) == 0o644
+
+
 # ---------------------------------------------------------------------------
 # fetch_airport_list tests (mocked HTTP)
 # ---------------------------------------------------------------------------
@@ -1364,6 +1384,23 @@ def test_save_history_image_returns_none_on_oserror():
         result = save_history_image(data, "KSPB", 0, 1700000000, config)
 
     assert result is None
+
+
+def test_save_history_image_sets_file_permissions_0644():
+    """save_history_image creates files with mode 0o644 (owner rw, group/others r)."""
+    import stat
+
+    from app.archiver import save_history_image
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {"archive": {"output_dir": tmpdir}}
+        data = b"\xff\xd8\xff"
+
+        path = save_history_image(data, "KSPB", 0, 1700000000, config)
+
+        assert path is not None
+        mode = os.stat(path).st_mode
+        assert stat.S_IMODE(mode) == 0o644
 
 
 def test_webcam_to_image_url_returns_absolute_url():
