@@ -114,5 +114,5 @@ def fetch_airport_list(config: dict) -> list[dict]:
 ## Configuration
 
 - **Single source** — `config/config.yaml` driven by `ARCHIVER_CONFIG` env var.
-- **Defaults** — Deep-merge user config over defaults.
+- **Defaults** — Deep-merge user config over defaults. `ARCHIVER_*` env vars override file values.
 - **Never commit** — `config/config.yaml` is in `.gitignore`. Use `config.yaml.example` as template.
