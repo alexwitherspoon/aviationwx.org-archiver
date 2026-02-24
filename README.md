@@ -8,7 +8,8 @@ Part of the [AviationWX.org](https://github.com/alexwitherspoon/aviationwx) proj
 
 - **Automated archiving** — fetches images from all or selected airports on a configurable schedule
 - **History API mode** — uses AviationWX history API to download all available frames, only missing ones; run every 15 min captures ~15 images per webcam (60s refresh)
-- **Organised storage** — files saved as `archive/AIRPORT_CODE/YYYY/MM/DD/filename`
+- **Round-robin prioritization** — cycles through all enabled airports, downloading the oldest pending frame from each per round to capture expiring history before it is lost
+- **Organised storage** — files saved as `archive/AIRPORT_CODE/YYYY/MM/DD/camera_name/filename`
 - **Single config file** — one YAML file drives the entire system (stored in named volume)
 - **Environment variable overrides** — configure via `ARCHIVER_*` env vars
 - **Web GUI** — local dashboard for monitoring, configuration, and browsing the archive
@@ -115,18 +116,26 @@ docker run -d \
 ```
 archive/
 ├── KSPB/
+│   ├── metadata.json          # Airport + webcams API response (updated each run)
 │   └── 2024/
 │       └── 06/
 │           └── 15/
-│               ├── 20240615_143000_webcam.jpg
-│               ├── 20240615_150000_webcam.jpg
-│               └── 1718456780_0.jpg   # history mode: {timestamp}_{cam}.jpg
+│               ├── scappoose_airport_north_runway/
+│               │   ├── 20240615_143000_webcam.jpg
+│               │   └── 1718456780_0.jpg   # history mode: {timestamp}_{cam}.jpg
+│               └── scappoose_airport_south_runway/
+│                   └── 20240615_150000_webcam.jpg
 └── KAWO/
+    ├── metadata.json
     └── 2024/
         └── 06/
             └── 15/
-                └── 20240615_143001_snapshot.webp
+                └── camera_name/
+                    └── 20240615_143001_snapshot.webp
 ```
+
+- **metadata.json** — Full airport and webcams API response; overwritten each run (not versioned).
+- **Camera names** — Sanitized for Linux: lowercase, spaces and hyphens → underscores.
 
 ## Web GUI
 

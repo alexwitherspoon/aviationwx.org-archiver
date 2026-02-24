@@ -2,7 +2,7 @@
 AviationWX.org Archiver - Core image fetching and archival logic.
 
 Fetches webcam images from AviationWX.org and organises them on disk as:
-    <output_dir>/<AIRPORT_CODE>/<YYYY>/<MM>/<DD>/<filename>
+    <output_dir>/<AIRPORT_CODE>/<YYYY>/<MM>/<DD>/<camera_name>/<filename>
 """
 
 from __future__ import annotations
@@ -26,6 +26,25 @@ from app.constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_camera_name(name: str, fallback: str = "unknown") -> str:
+    """
+    Make camera name safe for Linux filesystem: lowercase, no spaces.
+
+    Replaces spaces with underscores and strips other unsafe chars.
+    Returns fallback if result would be empty.
+    """
+    if not name or not isinstance(name, str):
+        return fallback
+    # Lowercase, replace spaces with underscores, keep alphanumeric and underscore
+    safe = name.lower().replace(" ", "_")
+    safe = "".join(c if c.isalnum() or c == "_" else "_" for c in safe)
+    # Collapse multiple underscores
+    while "__" in safe:
+        safe = safe.replace("__", "_")
+    safe = safe.strip("_")
+    return safe if safe else fallback
 
 
 # Browser-like User-Agent to avoid Cloudflare blocks.
@@ -273,18 +292,19 @@ def _webcam_to_image_url(webcam: dict, config: dict) -> str | None:
     return None
 
 
-def _fetch_webcams_list(airport: dict, config: dict) -> list[dict]:
+def _fetch_webcams_api_response(airport: dict, config: dict) -> dict | None:
     """
-    Fetch webcams list from API for an airport.
+    Fetch full webcams API response for an airport.
 
-    Returns list of webcam dicts with index, history_url, history_enabled, etc.
+    Returns the raw API response dict (meta, webcams, etc.) or None on failure.
+    Used by setup to write metadata.json and identify cameras.
     """
     code = _airport_code(airport)
     api_url = config["source"]["airports_api_url"]
     api_base = api_url.rstrip("/").rsplit("/airports", 1)[0]
     webcam_api = f"{api_base}/airports/{code}/webcams"
     timeout = config["source"]["request_timeout"]
-    logger.debug("Fetching webcams list from %s", webcam_api)
+    logger.debug("Fetching webcams from %s", webcam_api)
 
     try:
         _rate_limit(config)
@@ -296,7 +316,7 @@ def _fetch_webcams_list(airport: dict, config: dict) -> list[dict]:
                 resp.status_code,
                 code,
             )
-            return []
+            return None
         data = resp.json()
         webcams = data.get("webcams", data.get("data", []))
         if not isinstance(webcams, list):
@@ -305,18 +325,83 @@ def _fetch_webcams_list(airport: dict, config: dict) -> list[dict]:
                 code,
                 type(webcams).__name__,
             )
-            return []
-        if not webcams:
-            logger.debug("Webcams API returned empty list for %s", code)
-            return []
+            return None
         logger.debug("Webcams API returned %d webcam(s) for %s", len(webcams), code)
-        return webcams
+        return data
     except requests.RequestException as exc:
         logger.debug("Webcams API request failed for %s: %s", code, exc)
-        return []
+        return None
     except json.JSONDecodeError as exc:
         logger.debug("Webcams API invalid JSON for %s: %s", code, exc)
+        return None
+
+
+def _fetch_webcams_list(airport: dict, config: dict) -> list[dict]:
+    """
+    Fetch webcams list from API for an airport.
+
+    Returns list of webcam dicts with index, history_url, history_enabled, etc.
+    """
+    data = _fetch_webcams_api_response(airport, config)
+    if data is None:
         return []
+    webcams = data.get("webcams", data.get("data", []))
+    return webcams if isinstance(webcams, list) else []
+
+
+def setup_airport_archive(airport: dict, config: dict) -> list[dict] | None:
+    """
+    Setup API call: fetch webcams, write metadata.json, create directory structure.
+
+    Creates output_dir/AIRPORT/metadata.json with full API response.
+    Creates output_dir/AIRPORT/YYYY/MM/DD/camera_name/ for today and each camera.
+    Returns list of webcams for use by archive run, or None on API failure.
+    """
+    code = _airport_code(airport)
+    output_dir = config["archive"]["output_dir"]
+    airport_root = os.path.join(output_dir, code.upper())
+
+    api_response = _fetch_webcams_api_response(airport, config)
+    webcams = []
+    if api_response is not None:
+        webcams = api_response.get("webcams", api_response.get("data", []))
+        if not isinstance(webcams, list):
+            webcams = []
+
+    metadata = {
+        "airport": airport,
+        "api_response": api_response if api_response else {},
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+    }
+    metadata_path = os.path.join(airport_root, "metadata.json")
+    try:
+        os.makedirs(airport_root, exist_ok=True)
+        with open(metadata_path, "w") as fh:
+            json.dump(metadata, fh, indent=2)
+        logger.debug("Wrote %s", metadata_path)
+    except OSError as exc:
+        logger.warning("Failed to write metadata for %s: %s", code, exc)
+
+    if webcams:
+        run_ts = datetime.now(timezone.utc)
+        for webcam in webcams:
+            cam_name = webcam.get("name")
+            cam_safe = _sanitize_camera_name(
+                cam_name or "", fallback=f"cam_{webcam.get('index', 0)}"
+            )
+            date_path = os.path.join(
+                airport_root,
+                run_ts.strftime("%Y"),
+                run_ts.strftime("%m"),
+                run_ts.strftime("%d"),
+                cam_safe,
+            )
+            try:
+                os.makedirs(date_path, exist_ok=True)
+            except OSError as exc:
+                logger.warning("Failed to create camera dir %s: %s", date_path, exc)
+
+    return webcams if webcams else None
 
 
 def fetch_history_frames(airport_code: str, webcam: dict, config: dict) -> list[dict]:
@@ -411,7 +496,7 @@ def _get_existing_frames(output_dir: str, airport_code: str) -> set[tuple[int, i
     Scan archive for existing frames and return set of (timestamp, cam_index).
 
     History filenames follow: {ts}_{cam}.jpg (or .webp).
-    Layout: output_dir/AIRPORT/YYYY/MM/DD/
+    Layout: output_dir/AIRPORT/YYYY/MM/DD/camera_name/
     """
     existing: set[tuple[int, int]] = set()
     airport_upper = airport_code.upper()
@@ -426,7 +511,7 @@ def _get_existing_frames(output_dir: str, airport_code: str) -> set[tuple[int, i
     for root, _dirs, files in os.walk(output_dir):
         rel = os.path.relpath(root, output_dir)
         parts = rel.split(os.sep)
-        if len(parts) < 4:
+        if len(parts) < 5:
             continue
         if parts[0].upper() != airport_upper:
             continue
@@ -565,15 +650,17 @@ def save_history_image(
     cam_index: int,
     frame_ts: int,
     config: dict,
+    camera_name: str | None = None,
 ) -> str | None:
     """
     Save a history API frame to the archive.
 
     Filename: {ts}_{cam}.jpg for uniqueness.
-    Directory: output_dir/AIRPORT/YYYY/MM/DD/
+    Directory: output_dir/AIRPORT/YYYY/MM/DD/camera_name/
     Files are created with mode 0o644 (owner rw, group/others r).
     """
     output_dir = config["archive"]["output_dir"]
+    cam_safe = _sanitize_camera_name(camera_name or "", fallback=f"cam_{cam_index}")
     dt = datetime.fromtimestamp(frame_ts, tz=timezone.utc)
     date_path = os.path.join(
         output_dir,
@@ -581,6 +668,7 @@ def save_history_image(
         dt.strftime("%Y"),
         dt.strftime("%m"),
         dt.strftime("%d"),
+        cam_safe,
     )
 
     try:
@@ -603,6 +691,7 @@ def save_history_image(
         with open(filepath, "wb") as fh:
             fh.write(image_data)
         os.chmod(filepath, 0o644)
+        os.utime(filepath, (frame_ts, frame_ts))
         logger.info(
             "Archived history frame %s cam %s @ %s -> %s",
             airport_code,
@@ -622,11 +711,12 @@ def save_image(
     airport_code: str,
     config: dict,
     timestamp: datetime | None = None,
+    camera_name: str | None = None,
 ) -> str | None:
     """
     Save image bytes to the archive directory.
 
-    Directory structure: <output_dir>/<AIRPORT_CODE>/<YYYY>/<MM>/<DD>/<filename>
+    Directory structure: output_dir/AIRPORT/YYYY/MM/DD/camera_name/filename
 
     The filename is derived from the URL basename; a timestamp prefix is added
     to avoid collisions when the same URL is fetched repeatedly.
@@ -638,12 +728,14 @@ def save_image(
         timestamp = datetime.now(timezone.utc)
 
     output_dir = config["archive"]["output_dir"]
+    cam_safe = _sanitize_camera_name(camera_name or "", fallback="current")
     date_path = os.path.join(
         output_dir,
         airport_code.upper(),
         timestamp.strftime("%Y"),
         timestamp.strftime("%m"),
         timestamp.strftime("%d"),
+        cam_safe,
     )
 
     try:
@@ -670,6 +762,8 @@ def save_image(
         with open(filepath, "wb") as fh:
             fh.write(image_data)
         os.chmod(filepath, 0o644)
+        ts = timestamp.timestamp()
+        os.utime(filepath, (ts, ts))
         logger.info("Archived %s -> %s", url, filepath)
         return filepath
     except OSError as exc:
@@ -696,10 +790,13 @@ def _collect_archive_files(output_dir: str) -> list[tuple[str, float, int]]:
     Walk archive directory and return list of (path, mtime, size) for all files.
 
     Used for retention by size (oldest-first deletion).
+    Excludes metadata.json (updated each run, not versioned).
     """
     result: list[tuple[str, float, int]] = []
     for root, _dirs, files in os.walk(output_dir):
         for fname in files:
+            if fname == "metadata.json":
+                continue
             fpath = os.path.join(root, fname)
             try:
                 stat = os.stat(fpath)
@@ -763,6 +860,8 @@ def apply_retention(config: dict) -> int:
         )
         for root, _dirs, files in os.walk(output_dir):
             for fname in files:
+                if fname == "metadata.json":
+                    continue
                 fpath = os.path.join(root, fname)
                 try:
                     if os.path.getmtime(fpath) < cutoff:
@@ -812,17 +911,132 @@ def apply_retention(config: dict) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _collect_pending_per_airport(
+    airports: list[dict],
+    config: dict,
+) -> tuple[dict[str, list[tuple[dict, dict | None]]], dict[str, dict]]:
+    """
+    Collect pending (webcam, frame) per airport, sorted oldest-first.
+
+    Returns (queues, airport_by_code). queues[code] = [(webcam, frame), ...]
+    with frame=None meaning "current image" for webcams without history.
+    """
+    output_dir = config["archive"]["output_dir"]
+    queues: dict[str, list[tuple[dict, dict | None]]] = {}
+    airport_by_code: dict[str, dict] = {}
+
+    for airport in airports:
+        code = _airport_code(airport)
+        if not code:
+            continue
+        webcams = setup_airport_archive(airport, config)
+        if not webcams:
+            continue
+        airport_by_code[code] = airport
+        existing = _get_existing_frames(output_dir, code)
+        pending: list[tuple[dict, dict | None]] = []
+
+        for webcam in webcams:
+            if webcam.get("history_enabled") and webcam.get("history_url"):
+                frames = fetch_history_frames(code, webcam, config)
+                cam_index = webcam.get("index", 0)
+                for frame in frames:
+                    ts = frame["timestamp"]
+                    if (ts, cam_index) not in existing:
+                        pending.append((webcam, frame))
+            else:
+                pending.append((webcam, None))
+
+        pending.sort(key=lambda x: x[1]["timestamp"] if x[1] is not None else 2**63)
+        if pending:
+            queues[code] = pending
+
+    return queues, airport_by_code
+
+
+def _run_archive_round_robin(
+    queues: dict[str, list[tuple[dict, dict | None]]],
+    airport_by_code: dict[str, dict],
+    config: dict,
+    stats: dict,
+    deadline: float | None,
+) -> None:
+    """
+    Process pending frames in round-robin across airports, oldest first per airport.
+
+    Each round visits each airport once, downloading its oldest pending frame.
+    """
+    run_ts = datetime.now(timezone.utc)
+    codes = list(queues.keys())
+    if not codes:
+        return
+
+    while codes:
+        if deadline is not None and time.time() >= deadline:
+            return
+        progress = False
+        for code in list(codes):
+            if not queues[code]:
+                codes.remove(code)
+                continue
+            webcam, frame = queues[code].pop(0)
+            cam_index = webcam.get("index", 0)
+            cam_name = webcam.get("name")
+
+            if frame is not None:
+                stats["images_fetched"] += 1
+                image_data = download_image(frame["url"], config)
+                if image_data is None:
+                    continue
+                saved = save_history_image(
+                    image_data,
+                    code,
+                    cam_index,
+                    frame["timestamp"],
+                    config,
+                    camera_name=cam_name,
+                )
+                if saved:
+                    stats["images_saved"] += 1
+            else:
+                url = _webcam_to_image_url(webcam, config)
+                if url:
+                    stats["images_fetched"] += 1
+                    image_data = download_image(url, config)
+                    if image_data is not None:
+                        saved = save_image(
+                            image_data,
+                            url,
+                            code,
+                            config,
+                            timestamp=run_ts,
+                            camera_name=cam_name,
+                        )
+                        if saved:
+                            stats["images_saved"] += 1
+            progress = True
+        if not progress:
+            break
+
+
 def _run_archive_history(
-    airport: dict, code: str, config: dict, stats: dict, deadline: float | None = None
+    airport: dict,
+    code: str,
+    config: dict,
+    stats: dict,
+    deadline: float | None = None,
+    webcams: list[dict] | None = None,
 ) -> bool:
     """
     Archive using the history API: fetch all available frames, download only
     missing ones. When run every 15 min with 60s refresh, captures ~15 new
     images per webcam. Webcams without history fall back to current image.
 
+    If webcams is provided (from setup), uses it; otherwise fetches from API.
     Returns True if stopped due to deadline (next run will resume from here).
     """
-    webcams = _fetch_webcams_list(airport, config)
+    if webcams is None:
+        webcams = _fetch_webcams_list(airport, config)
     if not webcams:
         logger.debug("No webcams from API for %s; falling back to current-only", code)
         _run_archive_current_only(
@@ -858,7 +1072,10 @@ def _run_archive_history(
                 image_data = download_image(frame["url"], config)
                 if image_data is None:
                     continue
-                saved = save_history_image(image_data, code, cam_index, ts, config)
+                cam_name = webcam.get("name")
+                saved = save_history_image(
+                    image_data, code, cam_index, ts, config, camera_name=cam_name
+                )
                 if saved:
                     stats["images_saved"] += 1
                     existing.add((ts, cam_index))
@@ -874,7 +1091,15 @@ def _run_archive_history(
                 stats["images_fetched"] += 1
                 image_data = download_image(url, config)
                 if image_data is not None:
-                    saved = save_image(image_data, url, code, config, timestamp=run_ts)
+                    cam_name = webcam.get("name")
+                    saved = save_image(
+                        image_data,
+                        url,
+                        code,
+                        config,
+                        timestamp=run_ts,
+                        camera_name=cam_name,
+                    )
                     if saved:
                         stats["images_saved"] += 1
     return False
@@ -886,20 +1111,38 @@ def _run_archive_current_only(
     config: dict,
     stats: dict,
     run_ts: datetime,
+    webcams: list[dict] | None = None,
 ) -> None:
     """Archive using current image only (legacy behavior)."""
-    image_urls = fetch_image_urls(airport, config)
-    if not image_urls:
-        logger.debug("No image URLs for %s (current-only mode)", code)
-
-    for url in image_urls:
-        stats["images_fetched"] += 1
-        image_data = download_image(url, config)
-        if image_data is None:
-            continue
-        saved = save_image(image_data, url, code, config, timestamp=run_ts)
-        if saved:
-            stats["images_saved"] += 1
+    if webcams is None:
+        webcams = _fetch_webcams_list(airport, config)
+    if webcams:
+        for webcam in webcams:
+            url = _webcam_to_image_url(webcam, config)
+            if not url:
+                continue
+            stats["images_fetched"] += 1
+            image_data = download_image(url, config)
+            if image_data is None:
+                continue
+            cam_name = webcam.get("name")
+            saved = save_image(
+                image_data, url, code, config, timestamp=run_ts, camera_name=cam_name
+            )
+            if saved:
+                stats["images_saved"] += 1
+    else:
+        image_urls = fetch_image_urls(airport, config)
+        if not image_urls:
+            logger.debug("No image URLs for %s (current-only mode)", code)
+        for url in image_urls:
+            stats["images_fetched"] += 1
+            image_data = download_image(url, config)
+            if image_data is None:
+                continue
+            saved = save_image(image_data, url, code, config, timestamp=run_ts)
+            if saved:
+                stats["images_saved"] += 1
 
 
 def run_archive(
@@ -963,62 +1206,77 @@ def run_archive(
         "yes" if deadline else "no",
     )
 
-    total_airports = len(airports)
-    for idx, airport in enumerate(airports, start=1):
-        if deadline is not None and time.time() >= deadline:
+    if deadline is not None and time.time() >= deadline:
+        logger.info("Archive run skipped: already past deadline.")
+        stats["timed_out"] = True
+        apply_retention(config)
+        return stats
+
+    if use_history:
+        try:
+            queues, airport_by_code = _collect_pending_per_airport(airports, config)
+            stats["airports_processed"] = len(airport_by_code)
+            total_pending = sum(len(q) for q in queues.values())
             logger.info(
-                "Job stopped after %d min; next run will resume. "
-                "Progress: %d airports, %d saved.",
-                timeout_min,
-                stats["airports_processed"],
-                stats["images_saved"],
+                "Round-robin: %d airport(s), %d pending frame(s) (oldest first)",
+                len(queues),
+                total_pending,
             )
-            stats["timed_out"] = True
-            break
-
-        code = _airport_code(airport)
-        if not code:
-            logger.debug("Skipping airport with no code/id/icao: %s", airport)
-            continue
-
-        stats["airports_processed"] += 1
-        fetched_before = stats["images_fetched"]
-        saved_before = stats["images_saved"]
-
-        logger.info(
-            "Archiving %s (airport %d/%d)...",
-            code,
-            idx,
-            total_airports,
-        )
-
-        if use_history:
-            try:
-                if _run_archive_history(airport, code, config, stats, deadline):
-                    logger.info(
-                        "Job stopped after %d min; next run will resume.",
-                        timeout_min,
+            _run_archive_round_robin(queues, airport_by_code, config, stats, deadline)
+            if deadline is not None and any(queues.values()):
+                stats["timed_out"] = True
+            airports_without_webcams = [
+                a
+                for a in airports
+                if _airport_code(a) and _airport_code(a) not in airport_by_code
+            ]
+            stats["airports_processed"] += len(airports_without_webcams)
+            for airport in airports_without_webcams:
+                code = _airport_code(airport)
+                try:
+                    _run_archive_current_only(airport, code, config, stats, run_ts)
+                except Exception as exc:
+                    logger.error(
+                        "Error archiving current-only for %s: %s",
+                        code,
+                        exc,
                     )
-                    stats["timed_out"] = True
-                    break
-            except Exception as exc:
-                logger.error("Error archiving history for %s: %s", code, exc)
-                stats["errors"] += 1
-        else:
+                    stats["errors"] += 1
+        except Exception as exc:
+            logger.error("Error during round-robin archive: %s", exc)
+            stats["errors"] += 1
+    else:
+        total_airports = len(airports)
+        for idx, airport in enumerate(airports, start=1):
+            if deadline is not None and time.time() >= deadline:
+                logger.info(
+                    "Job stopped after %d min; next run will resume.",
+                    timeout_min,
+                )
+                stats["timed_out"] = True
+                break
+
+            code = _airport_code(airport)
+            if not code:
+                logger.debug("Skipping airport with no code/id/icao: %s", airport)
+                continue
+
+            stats["airports_processed"] += 1
+            logger.info(
+                "Archiving %s (airport %d/%d)...",
+                code,
+                idx,
+                total_airports,
+            )
+
             try:
-                _run_archive_current_only(airport, code, config, stats, run_ts)
+                webcams = setup_airport_archive(airport, config)
+                _run_archive_current_only(
+                    airport, code, config, stats, run_ts, webcams=webcams
+                )
             except Exception as exc:
                 logger.error("Error archiving images for %s: %s", code, exc)
                 stats["errors"] += 1
-
-        delta_fetched = stats["images_fetched"] - fetched_before
-        delta_saved = stats["images_saved"] - saved_before
-        logger.info(
-            "%s complete: %d fetched, %d saved",
-            code,
-            delta_fetched,
-            delta_saved,
-        )
 
     apply_retention(config)
     logger.info(

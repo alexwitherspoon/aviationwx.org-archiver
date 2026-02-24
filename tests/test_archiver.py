@@ -2,6 +2,7 @@
 Tests for the AviationWX.org Archiver.
 """
 
+import json
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -859,6 +860,93 @@ def test_save_image_handles_url_without_path_basename():
         assert "image" in os.path.basename(path)
 
 
+def test_sanitize_camera_name_lowercase_no_spaces():
+    """_sanitize_camera_name produces Linux-safe names: lowercase, no spaces."""
+    from app.archiver import _sanitize_camera_name
+
+    assert _sanitize_camera_name("Scappoose Airport - North Runway") == (
+        "scappoose_airport_north_runway"
+    )
+    assert _sanitize_camera_name("Main Cam") == "main_cam"
+    assert _sanitize_camera_name("CAM 1") == "cam_1"
+    assert _sanitize_camera_name("") == "unknown"
+    assert _sanitize_camera_name("x", fallback="cam_0") == "x"
+    assert _sanitize_camera_name(None, fallback="cam_0") == "cam_0"
+
+
+def test_setup_airport_archive_creates_metadata_and_structure():
+    """setup_airport_archive writes metadata.json and creates camera dirs."""
+    from app.archiver import setup_airport_archive
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {"archive": {"output_dir": tmpdir}, "source": {}}
+        airport = {"code": "KSPB", "name": "Scappoose"}
+
+        api_response = {
+            "success": True,
+            "meta": {"airport_id": "kspb", "webcam_count": 2},
+            "webcams": [
+                {"index": 0, "name": "North Runway", "image_url": "/v1/kspb/0/image"},
+                {"index": 1, "name": "South Runway", "image_url": "/v1/kspb/1/image"},
+            ],
+        }
+
+        with patch(
+            "app.archiver._fetch_webcams_api_response", return_value=api_response
+        ):
+            webcams = setup_airport_archive(airport, config)
+
+        assert webcams == api_response["webcams"]
+        meta_path = os.path.join(tmpdir, "KSPB", "metadata.json")
+        assert os.path.isfile(meta_path)
+        with open(meta_path) as fh:
+            meta = json.load(fh)
+        assert meta["airport"] == airport
+        assert meta["api_response"] == api_response
+        assert "last_updated" in meta
+
+        # Camera dirs for today
+        now = datetime.now(timezone.utc)
+        north = os.path.join(
+            tmpdir,
+            "KSPB",
+            now.strftime("%Y"),
+            now.strftime("%m"),
+            now.strftime("%d"),
+            "north_runway",
+        )
+        south = os.path.join(
+            tmpdir,
+            "KSPB",
+            now.strftime("%Y"),
+            now.strftime("%m"),
+            now.strftime("%d"),
+            "south_runway",
+        )
+        assert os.path.isdir(north)
+        assert os.path.isdir(south)
+
+
+def test_setup_airport_archive_returns_none_when_api_fails():
+    """setup_airport_archive returns None when webcams API fails."""
+    from app.archiver import setup_airport_archive
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {"archive": {"output_dir": tmpdir}, "source": {}}
+        airport = {"code": "KSPB"}
+
+        with patch("app.archiver._fetch_webcams_api_response", return_value=None):
+            webcams = setup_airport_archive(airport, config)
+
+        assert webcams is None
+        meta_path = os.path.join(tmpdir, "KSPB", "metadata.json")
+        assert os.path.isfile(meta_path)
+        with open(meta_path) as fh:
+            meta = json.load(fh)
+        assert meta["airport"] == airport
+        assert meta["api_response"] == {}
+
+
 def test_save_image_sets_file_permissions_0644():
     """save_image creates files with mode 0o644 (owner rw, group/others r)."""
     import stat
@@ -1337,13 +1425,15 @@ def test_get_existing_frames_finds_history_files():
     from app.archiver import _get_existing_frames
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        path = os.path.join(tmpdir, "KSPB", "2024", "01", "15")
-        os.makedirs(path, exist_ok=True)
-        with open(os.path.join(path, "1700000000_0.jpg"), "wb") as f:
+        path0 = os.path.join(tmpdir, "KSPB", "2024", "01", "15", "cam_0")
+        path1 = os.path.join(tmpdir, "KSPB", "2024", "01", "15", "cam_1")
+        os.makedirs(path0, exist_ok=True)
+        os.makedirs(path1, exist_ok=True)
+        with open(os.path.join(path0, "1700000000_0.jpg"), "wb") as f:
             f.write(b"x")
-        with open(os.path.join(path, "1700000060_0.jpg"), "wb") as f:
+        with open(os.path.join(path0, "1700000060_0.jpg"), "wb") as f:
             f.write(b"x")
-        with open(os.path.join(path, "1700000120_1.jpg"), "wb") as f:
+        with open(os.path.join(path1, "1700000120_1.jpg"), "wb") as f:
             f.write(b"x")
 
         existing = _get_existing_frames(tmpdir, "KSPB")
@@ -1354,7 +1444,7 @@ def test_get_existing_frames_finds_history_files():
 
 
 def test_save_history_image_creates_correct_structure():
-    """save_history_image creates output_dir/AIRPORT/YYYY/MM/DD/{ts}_{cam}.jpg."""
+    """save_history_image creates output_dir/AIRPORT/YYYY/MM/DD/camera/file.jpg."""
     from app.archiver import save_history_image
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1369,6 +1459,29 @@ def test_save_history_image_creates_correct_structure():
         assert "KSPB" in path
         assert path.endswith("1700000000_0.jpg")
         assert "2023" in path and "11" in path
+        assert "cam_0" in path
+        assert os.path.getmtime(path) == ts
+
+
+def test_save_image_sets_mtime_to_capture_time():
+    """save_image sets file mtime to image capture timestamp."""
+    from app.archiver import save_image
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {"archive": {"output_dir": tmpdir}}
+        ts = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
+        data = b"\xff\xd8\xff"
+
+        path = save_image(
+            data,
+            "https://example.com/webcam.jpg",
+            "KSPB",
+            config,
+            timestamp=ts,
+        )
+
+        assert path is not None
+        assert os.path.getmtime(path) == ts.timestamp()
 
 
 def test_save_history_image_returns_none_on_oserror():
@@ -1581,8 +1694,8 @@ def test_run_archive_history_mode_downloads_missing_frames():
         assert stats["images_saved"] >= 1
         assert stats["errors"] == 0
         assert "KSPB" in os.listdir(tmpdir)
-        # 1700000000 -> 2023-11-14 UTC
-        kspb_path = os.path.join(tmpdir, "KSPB", "2023", "11", "14")
+        # 1700000000 -> 2023-11-14 UTC, camera fallback cam_0
+        kspb_path = os.path.join(tmpdir, "KSPB", "2023", "11", "14", "cam_0")
         assert os.path.isdir(kspb_path)
 
 
@@ -1683,6 +1796,36 @@ def test_apply_retention_returns_zero_when_output_dir_missing():
     )
 
 
+def test_apply_retention_excludes_metadata_json():
+    """apply_retention never deletes metadata.json (by age or size)."""
+    from app.archiver import apply_retention
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        airport_dir = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "cam_0")
+        os.makedirs(airport_dir, exist_ok=True)
+        meta_path = os.path.join(tmpdir, "KSPB", "metadata.json")
+        with open(meta_path, "w") as fh:
+            json.dump({"airport": {"code": "KSPB"}}, fh)
+        img_path = os.path.join(airport_dir, "old.jpg")
+        with open(img_path, "wb") as fh:
+            fh.write(b"x" * (1024 * 1024))
+        old_ts = datetime.now(timezone.utc).timestamp() - 86400 * 10
+        os.utime(meta_path, (old_ts, old_ts))
+        os.utime(img_path, (old_ts, old_ts))
+
+        config = {
+            "archive": {
+                "output_dir": tmpdir,
+                "retention_days": 7,
+                "retention_max_gb": 0,
+            },
+        }
+        deleted = apply_retention(config)
+
+        assert deleted >= 1
+        assert os.path.isfile(meta_path)
+
+
 def test_apply_retention_by_size_no_deletion_when_under_limit():
     """apply_retention does nothing when total size is under retention_max_gb."""
     from app.archiver import apply_retention
@@ -1748,8 +1891,8 @@ def test_apply_retention_by_size_works_with_nested_archive_structure():
     from app.archiver import apply_retention
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Mimic archive layout: KSPB/2024/01/15/file.jpg
-        archive_path = os.path.join(tmpdir, "KSPB", "2024", "01", "15")
+        # Mimic archive layout: KSPB/2024/01/15/camera/file.jpg
+        archive_path = os.path.join(tmpdir, "KSPB", "2024", "01", "15", "cam_0")
         os.makedirs(archive_path, exist_ok=True)
         for i in range(3):
             fpath = os.path.join(archive_path, f"frame_{i}.jpg")
