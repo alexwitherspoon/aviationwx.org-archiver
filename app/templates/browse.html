@@ -3,7 +3,7 @@
 
 {% block content %}
 <h1>Browse Archive</h1>
-<p class="subtitle">Explore archived images organised by airport / year / month / day</p>
+<p class="subtitle">Explore archived images organised by airport / year / month / day / camera</p>
 
 <style>
   .file-link { color: var(--accent); text-decoration: none; }
@@ -16,6 +16,11 @@
       <p id="preview-filename" style="color:var(--text-muted); font-size:12px;"></p>
     </div>
     <a id="preview-download-btn" href="" download="" class="btn primary" style="display:inline-block; padding:8px 16px; text-decoration:none; border-radius:6px; font-size:13px; font-weight:500;">Download</a>
+  </div>
+  <div id="preview-nav" style="display:none; margin-bottom:12px; flex-wrap:wrap; align-items:center; justify-content:center; gap:12px;">
+    <button id="prev-btn" type="button" class="btn" title="Previous image (←)">← Previous</button>
+    <span id="preview-position" style="color:var(--text-muted); font-size:13px;"></span>
+    <button id="next-btn" type="button" class="btn" title="Next image (→)">Next →</button>
   </div>
   <div id="preview-content" style="max-width:100%; overflow:auto;">
     <img id="preview-image" src="" alt="Preview" style="max-width:100%; max-height:70vh; display:block; border-radius:4px;">
@@ -40,8 +45,10 @@
         <span class="badge badge-info" style="margin-left:8px">
           {% set ns = namespace(count=0) %}
           {% for month_data in months.values() %}
-          {% for day, files in month_data.items() %}
+          {% for day_data in month_data.values() %}
+          {% for camera, files in day_data.items() %}
           {% set ns.count = ns.count + (files|length) %}
+          {% endfor %}
           {% endfor %}
           {% endfor %}
           {{ ns.count }} file(s)
@@ -49,12 +56,13 @@
       </summary>
       {% for month, days in months.items() %}
       <details style="margin-left:16px;">
-        <summary class="card" style="margin-bottom:4px;">
-          {{ year }}-{{ month }}
-        </summary>
-        {% for day, files in days.items() %}
+      <summary class="card" style="margin-bottom:4px;">
+        {{ year }}-{{ month }}
+      </summary>
+        {% for day, cameras in days.items() %}
+        {% for camera, files in cameras.items() %}
         <div class="card" style="margin-left:16px; margin-bottom:8px;">
-          <h2>{{ airport }} &mdash; {{ year }}-{{ month }}-{{ day }}</h2>
+          <h2>{{ airport }} &mdash; {{ camera }} &mdash; {{ year }}-{{ month }}-{{ day }}</h2>
           {% if files %}
             <div style="overflow-x:auto;">
               <table style="width:100%; border-collapse:collapse; font-size:12px; font-family:monospace;">
@@ -65,14 +73,27 @@
                   </tr>
                 </thead>
                 <tbody>
+                  {% set image_exts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'] %}
+                  {% set ns = namespace(images=[]) %}
+                  {% for fname in files %}
+                    {% set ext = fname.split('.')|last|lower %}
+                    {% if ext in image_exts %}
+                      {% set _ = ns.images.append({'path': airport ~ '/' ~ year ~ '/' ~ month ~ '/' ~ day ~ '/' ~ camera ~ '/' ~ fname, 'filename': fname, 'index': ns.images|length}) %}
+                    {% endif %}
+                  {% endfor %}
                   {% for fname in files %}
                   <tr style="border-bottom:1px solid var(--border);" class="file-row">
                     <td style="padding:4px 8px; color:var(--text-muted);">{{ loop.index }}</td>
                     <td style="padding:4px 8px;">
-                      <a href="{{ url_for('serve_archive_file', subpath=airport ~ '/' ~ year ~ '/' ~ month ~ '/' ~ day ~ '/' ~ fname) }}"
+                      {% set ext = fname.split('.')|last|lower %}
+                      {% set img_entry = ns.images|selectattr('filename', 'equalto', fname)|first %}
+                      {% set img_index = img_entry.index if img_entry else -1 %}
+                      <a href="{{ url_for('serve_archive_file', subpath=airport ~ '/' ~ year ~ '/' ~ month ~ '/' ~ day ~ '/' ~ camera ~ '/' ~ fname) }}"
                          class="file-link"
-                         data-path="{{ airport }}/{{ year }}/{{ month }}/{{ day }}/{{ fname }}"
-                         data-filename="{{ fname }}">
+                         data-path="{{ airport }}/{{ year }}/{{ month }}/{{ day }}/{{ camera }}/{{ fname }}"
+                         data-filename="{{ fname }}"
+                         data-siblings="{{ ns.images|tojson }}"
+                         data-index="{{ img_index }}">
                         {{ fname }}
                       </a>
                     </td>
@@ -85,6 +106,7 @@
             <p class="empty">No files.</p>
           {% endif %}
         </div>
+        {% endfor %}
         {% endfor %}
       </details>
       {% endfor %}
@@ -101,6 +123,71 @@
   const filenameEl = document.getElementById('preview-filename');
   const nonImageEl = document.getElementById('preview-non-image');
   const downloadBtn = document.getElementById('preview-download-btn');
+  const navEl = document.getElementById('preview-nav');
+  const prevBtn = document.getElementById('prev-btn');
+  const nextBtn = document.getElementById('next-btn');
+  const positionEl = document.getElementById('preview-position');
+
+  let siblings = [];
+  let currentIndex = -1;
+  let basePath = "{{ url_for('serve_archive_file', subpath='') }}";
+  if (basePath && !basePath.endsWith('/')) basePath += '/';
+
+  function showImage(url, filename, isImage) {
+    filenameEl.textContent = filename;
+    downloadBtn.href = url;
+    downloadBtn.download = filename;
+    if (isImage) {
+      img.style.display = 'block';
+      img.src = url;
+      nonImageEl.style.display = 'none';
+    } else {
+      img.style.display = 'none';
+      img.src = '';
+      nonImageEl.style.display = 'block';
+    }
+  }
+
+  function updateNav() {
+    if (siblings.length <= 1) {
+      navEl.style.display = 'none';
+      return;
+    }
+    navEl.style.display = 'flex';
+    prevBtn.disabled = currentIndex <= 0;
+    nextBtn.disabled = currentIndex >= siblings.length - 1;
+    positionEl.textContent = (currentIndex + 1) + ' / ' + siblings.length;
+  }
+
+  function goToIndex(idx) {
+    if (idx < 0 || idx >= siblings.length) return;
+    currentIndex = idx;
+    const s = siblings[idx];
+    const url = basePath + s.path;
+    showImage(url, s.filename, true);
+    updateNav();
+  }
+
+  function handleKeydown(e) {
+    if (!panel || panel.style.display !== 'block' || siblings.length <= 1) return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      if (currentIndex > 0) goToIndex(currentIndex - 1);
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      if (currentIndex < siblings.length - 1) goToIndex(currentIndex + 1);
+    }
+  }
+
+  document.addEventListener('keydown', handleKeydown);
+
+  prevBtn.addEventListener('click', function() {
+    if (currentIndex > 0) goToIndex(currentIndex - 1);
+  });
+  nextBtn.addEventListener('click', function() {
+    if (currentIndex < siblings.length - 1) goToIndex(currentIndex + 1);
+  });
 
   document.querySelectorAll('.file-link').forEach(function(link) {
     link.addEventListener('click', function(e) {
@@ -110,19 +197,21 @@
       const ext = filename.split('.').pop().toLowerCase();
       const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'];
 
-      panel.style.display = 'block';
-      filenameEl.textContent = filename;
-      downloadBtn.href = url;
-      downloadBtn.download = filename;
+      try {
+        siblings = JSON.parse(this.getAttribute('data-siblings') || '[]');
+        currentIndex = parseInt(this.getAttribute('data-index'), 10);
+      } catch (_) {
+        siblings = [];
+        currentIndex = -1;
+      }
 
-      if (imageExts.includes(ext)) {
-        img.style.display = 'block';
-        img.src = url;
-        nonImageEl.style.display = 'none';
+      panel.style.display = 'block';
+      showImage(url, filename, imageExts.includes(ext));
+
+      if (imageExts.includes(ext) && siblings.length > 0 && currentIndex >= 0) {
+        updateNav();
       } else {
-        img.style.display = 'none';
-        img.src = '';
-        nonImageEl.style.display = 'block';
+        navEl.style.display = 'none';
       }
 
       panel.scrollIntoView({ behavior: 'smooth', block: 'start' });

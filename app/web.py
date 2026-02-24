@@ -58,8 +58,8 @@ def _archive_tree(output_dir: str) -> dict:
     """
     Build a nested dict representing the archive directory tree.
 
-    Structure: {airport: {year: {month: {day: [filenames]}}}}
-    Layout: output_dir/AIRPORT/YYYY/MM/DD/
+    Structure: {airport: {year: {month: {day: {camera: [filenames]}}}}}
+    Layout: output_dir/AIRPORT/YYYY/MM/DD/camera_name/
     """
     tree = {}
     if not os.path.isdir(output_dir):
@@ -84,8 +84,13 @@ def _archive_tree(output_dir: str) -> dict:
                     day_path = os.path.join(month_path, day)
                     if not os.path.isdir(day_path) or not day.isdigit():
                         continue
-                    files = sorted(os.listdir(day_path))
-                    tree[airport][year][month][day] = files
+                    tree[airport][year][month][day] = {}
+                    for camera in sorted(os.listdir(day_path)):
+                        camera_path = os.path.join(day_path, camera)
+                        if not os.path.isdir(camera_path):
+                            continue
+                        files = sorted(os.listdir(camera_path))
+                        tree[airport][year][month][day][camera] = files
 
     return tree
 
@@ -175,6 +180,8 @@ def _archive_stats(output_dir: str) -> dict:
 
     for root, _dirs, files in os.walk(output_dir):
         for fname in files:
+            if fname == "metadata.json":
+                continue
             fpath = os.path.join(root, fname)
             try:
                 total_files += 1

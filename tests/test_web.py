@@ -41,11 +41,11 @@ def test_archive_tree_returns_empty_when_output_dir_missing():
 
 
 def test_archive_tree_builds_nested_structure_from_directory():
-    """_archive_tree builds airport/year/month/day structure from archive layout."""
+    """_archive_tree builds airport/year/month/day/camera structure from archive."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        path_kspb_2024_06_15 = os.path.join(tmpdir, "KSPB", "2024", "06", "15")
-        os.makedirs(path_kspb_2024_06_15, exist_ok=True)
-        with open(os.path.join(path_kspb_2024_06_15, "image.jpg"), "wb") as fh:
+        path = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "north_runway")
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, "image.jpg"), "wb") as fh:
             fh.write(b"data")
 
         tree = _archive_tree(tmpdir)
@@ -54,14 +54,21 @@ def test_archive_tree_builds_nested_structure_from_directory():
     assert "2024" in tree["KSPB"]
     assert "06" in tree["KSPB"]["2024"]
     assert "15" in tree["KSPB"]["2024"]["06"]
-    assert "image.jpg" in tree["KSPB"]["2024"]["06"]["15"]
+    assert "north_runway" in tree["KSPB"]["2024"]["06"]["15"]
+    assert "image.jpg" in tree["KSPB"]["2024"]["06"]["15"]["north_runway"]
 
 
 def test_archive_tree_ignores_non_digit_directories():
     """_archive_tree skips year/month/day directories that are not digits."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        os.makedirs(os.path.join(tmpdir, "KSPB", "2024", "xx", "15"), exist_ok=True)
-        os.makedirs(os.path.join(tmpdir, "KAWO", "abcd", "06", "15"), exist_ok=True)
+        os.makedirs(
+            os.path.join(tmpdir, "KSPB", "2024", "xx", "15", "cam"),
+            exist_ok=True,
+        )
+        os.makedirs(
+            os.path.join(tmpdir, "KAWO", "abcd", "06", "15", "cam"),
+            exist_ok=True,
+        )
 
         tree = _archive_tree(tmpdir)
 
@@ -202,8 +209,8 @@ def test_archive_stats_returns_empty_when_output_dir_missing():
 def test_archive_stats_counts_files_and_airports():
     """_archive_stats counts total files, size, and unique airports."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        path1 = os.path.join(tmpdir, "KSPB", "2024", "06", "15")
-        path2 = os.path.join(tmpdir, "KAWO", "2024", "06", "15")
+        path1 = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "cam_a")
+        path2 = os.path.join(tmpdir, "KAWO", "2024", "06", "15", "cam_b")
         os.makedirs(path1, exist_ok=True)
         os.makedirs(path2, exist_ok=True)
         with open(os.path.join(path1, "a.jpg"), "wb") as fh:
@@ -221,7 +228,7 @@ def test_archive_stats_counts_files_and_airports():
 def test_archive_stats_handles_getsize_oserror():
     """_archive_stats continues when os.path.getsize raises OSError."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        path = os.path.join(tmpdir, "KSPB", "2024", "06", "15")
+        path = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "north_runway")
         os.makedirs(path, exist_ok=True)
         with open(os.path.join(path, "a.jpg"), "wb") as fh:
             fh.write(b"data")
@@ -481,7 +488,7 @@ def test_browse_includes_preview_and_clickable_files(flask_client):
     orig_dir = config["archive"]["output_dir"]
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = os.path.join(tmpdir, "KSPB", "2024", "06", "15")
+            path = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "north_runway")
             os.makedirs(path, exist_ok=True)
             with open(os.path.join(path, "image.jpg"), "wb") as fh:
                 fh.write(b"x")
@@ -494,7 +501,10 @@ def test_browse_includes_preview_and_clickable_files(flask_client):
         assert b"preview-panel" in resp.data
         assert b"file-link" in resp.data
         assert b"preview-download-btn" in resp.data
-        assert b"/archive/KSPB/2024/06/15/image.jpg" in resp.data
+        assert b"preview-nav" in resp.data
+        assert b"prev-btn" in resp.data
+        assert b"next-btn" in resp.data
+        assert b"/archive/KSPB/2024/06/15/north_runway/image.jpg" in resp.data
     finally:
         config["archive"]["output_dir"] = orig_dir
 
@@ -505,14 +515,14 @@ def test_serve_archive_file_returns_image(flask_client):
     orig_dir = config["archive"]["output_dir"]
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            path = os.path.join(tmpdir, "KSPB", "2024", "06", "15")
+            path = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "north_runway")
             os.makedirs(path, exist_ok=True)
             with open(os.path.join(path, "test.jpg"), "wb") as fh:
                 fh.write(b"\xff\xd8\xfffake-jpeg")
             config["archive"]["output_dir"] = tmpdir
             flask_app.config["ARCHIVER_CONFIG"] = config
 
-            resp = flask_client.get("/archive/KSPB/2024/06/15/test.jpg")
+            resp = flask_client.get("/archive/KSPB/2024/06/15/north_runway/test.jpg")
 
         assert resp.status_code == 200
         assert resp.content_type and "image" in resp.content_type
@@ -527,11 +537,16 @@ def test_serve_archive_file_404_when_file_missing(flask_client):
     orig_dir = config["archive"]["output_dir"]
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
-            os.makedirs(os.path.join(tmpdir, "KSPB", "2024", "06", "15"), exist_ok=True)
+            os.makedirs(
+                os.path.join(tmpdir, "KSPB", "2024", "06", "15", "north_runway"),
+                exist_ok=True,
+            )
             config["archive"]["output_dir"] = tmpdir
             flask_app.config["ARCHIVER_CONFIG"] = config
 
-            resp = flask_client.get("/archive/KSPB/2024/06/15/nonexistent.jpg")
+            resp = flask_client.get(
+                "/archive/KSPB/2024/06/15/north_runway/nonexistent.jpg"
+            )
 
         assert resp.status_code == 404
     finally:
