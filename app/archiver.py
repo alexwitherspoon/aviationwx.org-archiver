@@ -1918,7 +1918,13 @@ def apply_retention(config: dict) -> int:
         if own_batch:
             config.pop("_archive_index_batch", None)
             if batch["adds"] or batch["removes"]:
-                _flush_archive_index_batch(output_dir, batch)
+                try:
+                    _flush_archive_index_batch(output_dir, batch)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to flush archive index batch on retention exit: %s",
+                        exc,
+                    )
 
     if deleted:
         reasons = []
