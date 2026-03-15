@@ -114,12 +114,24 @@ def _archive_tree_uncached(output_dir: str) -> dict:
 
     Structure: {airport: {year: {month: {day: {camera: [filenames]}}}}}
     Layout: output_dir/AIRPORT/YYYY/MM/DD/camera_name/
-    Uses scandir for better performance on large archives.
+    Uses index when valid (fast); falls back to scandir for large archives.
     """
-    tree = {}
     if not os.path.isdir(output_dir):
-        return tree
+        return {}
 
+    from app.archiver import (
+        _archive_tree_from_index,
+        _index_entries_valid,
+        _load_archive_index,
+    )
+
+    data = _load_archive_index(output_dir)
+    if data and "files" in data and _index_entries_valid(output_dir, data):
+        tree = _archive_tree_from_index(data, output_dir)
+        if tree is not None:
+            return tree
+
+    tree = {}
     try:
         with os.scandir(output_dir) as it:
             dirs = []
@@ -367,7 +379,10 @@ def _archive_stats_uncached(output_dir: str, config: dict | None = None) -> dict
             parts = os.path.relpath(fpath, output_dir).split(os.sep)
             if len(parts) >= 1:
                 airports.add(parts[0])
-        _rebuild_archive_index(output_dir, config=None, pre_collected=collected)
+        # Non-blocking: skip index persist if archive worker holds lock (UI stays responsive)
+        _rebuild_archive_index(
+            output_dir, config=None, pre_collected=collected, lock_timeout=2
+        )
 
     return {
         "total_files": total_files,

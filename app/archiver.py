@@ -78,6 +78,30 @@ def _with_index_lock(output_dir: str):
         lock.release()
 
 
+@contextlib.contextmanager
+def _try_index_lock(output_dir: str, timeout_sec: float):
+    """
+    Try to acquire index lock with short timeout. Yields True if acquired, False otherwise.
+
+    Does NOT fall back to SoftFileLock (which blocks indefinitely). Use for web path
+    when we must not block the UI.
+    """
+    from filelock import FileLock, Timeout
+
+    lock_path = _archive_index_lock_path(output_dir)
+    lock = FileLock(lock_path)
+    acquired = False
+    try:
+        lock.acquire(timeout=timeout_sec)
+        acquired = True
+        yield True
+    except (Timeout, OSError):
+        yield False
+    finally:
+        if acquired:
+            lock.release()
+
+
 def _load_archive_index(output_dir: str) -> dict | None:
     """
     Load the archive index. Returns None if missing or invalid.
@@ -235,16 +259,61 @@ def _index_entries_valid(output_dir: str, data: dict, sample_size: int = 10) -> 
     return True
 
 
+def _archive_tree_from_index(data: dict, output_dir: str) -> dict | None:
+    """
+    Build browse tree from index data. Returns None if index structure is invalid.
+
+    Tree format: {airport: {year: {month: {day: {camera: [filenames]}}}}}
+    Path format: AIRPORT/YYYY/MM/DD/camera_name/filename.jpg
+    """
+    files = data.get("files", {})
+    if not isinstance(files, dict):
+        return None
+    tree: dict = {}
+    for rel_path in files:
+        if not _rel_path_safe(output_dir, rel_path):
+            continue
+        parts = os.path.normpath(rel_path).split(os.sep)
+        if len(parts) < 6:
+            continue
+        airport, year, month, day, camera = parts[0], parts[1], parts[2], parts[3], parts[4]
+        filename = parts[5]
+        if not (year.isdigit() and len(year) == 4 and month.isdigit() and len(month) == 2 and day.isdigit() and len(day) == 2):
+            continue
+        if airport not in tree:
+            tree[airport] = {}
+        if year not in tree[airport]:
+            tree[airport][year] = {}
+        if month not in tree[airport][year]:
+            tree[airport][year][month] = {}
+        if day not in tree[airport][year][month]:
+            tree[airport][year][month][day] = {}
+        if camera not in tree[airport][year][month][day]:
+            tree[airport][year][month][day][camera] = []
+        tree[airport][year][month][day][camera].append(filename)
+    for airport in tree:
+        for year in tree[airport]:
+            for month in tree[airport][year]:
+                for day in tree[airport][year][month]:
+                    for camera in tree[airport][year][month][day]:
+                        tree[airport][year][month][day][camera].sort()
+    return tree
+
+
 def _rebuild_archive_index(
     output_dir: str,
     config: dict | None = None,
     pre_collected: list[tuple[str, float, int]] | None = None,
+    *,
+    lock_timeout: float | None = 60,
 ) -> dict | None:
     """
     Rebuild the archive index from a full scandir walk or pre-collected results.
 
     Returns the new index data or None on failure.
     pre_collected: optional list of (full_path, mtime, size) to avoid double scan.
+    lock_timeout: seconds to wait for lock. If < 60, uses non-blocking path (no
+        SoftFileLock fallback). Use short value (e.g. 2) from web to avoid blocking UI.
     """
     files: dict[str, dict] = {}
     if pre_collected is not None:
@@ -266,6 +335,12 @@ def _rebuild_archive_index(
             except ValueError:
                 continue
     data = {"version": _ARCHIVE_INDEX_VERSION, "files": files}
+    if lock_timeout is not None and lock_timeout < 60:
+        with _try_index_lock(output_dir, lock_timeout) as got_lock:
+            if got_lock and _save_archive_index(output_dir, data):
+                logger.debug("Rebuilt archive index (%d files)", len(files))
+                return data
+        return None
     with _with_index_lock(output_dir):
         if _save_archive_index(output_dir, data):
             logger.debug("Rebuilt archive index (%d files)", len(files))

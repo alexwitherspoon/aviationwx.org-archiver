@@ -12,6 +12,8 @@ import os
 import sys
 import time
 
+import waitress
+
 from app.config import check_host_resources, load_config
 from app.ntp import check_ntp_time
 from app.scheduler import start_scheduler
@@ -79,7 +81,7 @@ def main() -> None:
             port = int(config["web"]["port"])
             host_display = host if host != "0.0.0.0" else "localhost"
             logger.info("Web GUI available at http://%s:%d", host_display, port)
-            app.run(host=host, port=port, debug=False, use_reloader=False)
+            waitress.serve(app, host=host, port=port, threads=6)
         else:
             logger.info("Web UI disabled; running scheduler only.")
             while True:

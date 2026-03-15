@@ -80,6 +80,30 @@ def test_archive_tree_builds_nested_structure_from_directory():
     assert "image.jpg" in tree["KSPB"]["2024"]["06"]["15"]["north_runway"]
 
 
+def test_archive_tree_uses_index_when_present():
+    """_archive_tree uses index when valid for fast browse (no scandir walk)."""
+    from app.archiver import _save_archive_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "north_runway")
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, "image.jpg"), "wb") as fh:
+            fh.write(b"data")
+        rel = os.path.relpath(
+            os.path.join(path, "image.jpg"), tmpdir
+        ).replace("\\", "/")
+        index_data = {
+            "version": 1,
+            "files": {rel: {"mtime": 1234567890.0, "size": 4}},
+        }
+        _save_archive_index(tmpdir, index_data)
+
+        tree = _archive_tree(tmpdir)
+
+    assert "KSPB" in tree
+    assert tree["KSPB"]["2024"]["06"]["15"]["north_runway"] == ["image.jpg"]
+
+
 def test_archive_tree_ignores_non_digit_directories():
     """_archive_tree skips year/month/day directories that are not digits."""
     with tempfile.TemporaryDirectory() as tmpdir:
