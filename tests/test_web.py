@@ -89,9 +89,9 @@ def test_archive_tree_uses_index_when_present():
         os.makedirs(path, exist_ok=True)
         with open(os.path.join(path, "image.jpg"), "wb") as fh:
             fh.write(b"data")
-        rel = os.path.relpath(
-            os.path.join(path, "image.jpg"), tmpdir
-        ).replace("\\", "/")
+        rel = os.path.relpath(os.path.join(path, "image.jpg"), tmpdir).replace(
+            "\\", "/"
+        )
         index_data = {
             "version": 1,
             "files": {rel: {"mtime": 1234567890.0, "size": 4}},

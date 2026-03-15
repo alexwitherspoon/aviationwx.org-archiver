@@ -81,10 +81,10 @@ def _with_index_lock(output_dir: str):
 @contextlib.contextmanager
 def _try_index_lock(output_dir: str, timeout_sec: float):
     """
-    Try to acquire index lock with short timeout. Yields True if acquired, False otherwise.
+    Try to acquire index lock with short timeout. Yields True if acquired, False.
 
-    Does NOT fall back to SoftFileLock (which blocks indefinitely). Use for web path
-    when we must not block the UI.
+    Does NOT fall back to SoftFileLock (which blocks indefinitely). Use for web
+    path when we must not block the UI.
     """
     from filelock import FileLock, Timeout
 
@@ -276,9 +276,23 @@ def _archive_tree_from_index(data: dict, output_dir: str) -> dict | None:
         parts = os.path.normpath(rel_path).split(os.sep)
         if len(parts) < 6:
             continue
-        airport, year, month, day, camera = parts[0], parts[1], parts[2], parts[3], parts[4]
+        airport, year, month, day, camera = (
+            parts[0],
+            parts[1],
+            parts[2],
+            parts[3],
+            parts[4],
+        )
         filename = parts[5]
-        if not (year.isdigit() and len(year) == 4 and month.isdigit() and len(month) == 2 and day.isdigit() and len(day) == 2):
+        valid_date = (
+            year.isdigit()
+            and len(year) == 4
+            and month.isdigit()
+            and len(month) == 2
+            and day.isdigit()
+            and len(day) == 2
+        )
+        if not valid_date:
             continue
         if airport not in tree:
             tree[airport] = {}

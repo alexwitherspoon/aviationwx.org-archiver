@@ -379,7 +379,7 @@ def _archive_stats_uncached(output_dir: str, config: dict | None = None) -> dict
             parts = os.path.relpath(fpath, output_dir).split(os.sep)
             if len(parts) >= 1:
                 airports.add(parts[0])
-        # Non-blocking: skip index persist if archive worker holds lock (UI stays responsive)
+        # Non-blocking: skip index persist if archive worker holds lock
         _rebuild_archive_index(
             output_dir, config=None, pre_collected=collected, lock_timeout=2
         )
