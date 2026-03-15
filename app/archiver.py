@@ -31,6 +31,143 @@ from app.constants import (
 
 logger = logging.getLogger(__name__)
 
+# Exclude metadata.json from retention/stats scans (updated each run, not versioned)
+_METADATA_JSON = "metadata.json"
+_ARCHIVE_INDEX_FILENAME = ".archive_index.json"
+_ARCHIVE_INDEX_VERSION = 1
+
+
+def _archive_index_path(output_dir: str) -> str:
+    """Path to the file-based archive index."""
+    return os.path.join(output_dir, _ARCHIVE_INDEX_FILENAME)
+
+
+def _load_archive_index(output_dir: str) -> dict | None:
+    """
+    Load the archive index. Returns None if missing or invalid.
+    Index format: {"version": N, "files": {rel_path: {"mtime": float, "size": int}}}
+    """
+    path = _archive_index_path(output_dir)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict) or data.get("version") != _ARCHIVE_INDEX_VERSION:
+            return None
+        files = data.get("files")
+        if not isinstance(files, dict):
+            return None
+        return data
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("Archive index load failed (%s): %s", path, exc)
+        return None
+
+
+def _save_archive_index(output_dir: str, data: dict) -> bool:
+    """Save the archive index. Returns True on success."""
+    path = _archive_index_path(output_dir)
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, separators=(",", ":"))
+        return True
+    except OSError as exc:
+        logger.debug("Archive index save failed (%s): %s", path, exc)
+        return False
+
+
+def _add_to_archive_index(
+    output_dir: str, full_path: str, mtime: float, size: int
+) -> None:
+    """Add or update a file entry in the archive index."""
+    try:
+        rel = os.path.relpath(full_path, output_dir)
+        if rel.startswith("..") or os.path.isabs(rel):
+            return
+    except ValueError:
+        return
+    data = _load_archive_index(output_dir) or {
+        "version": _ARCHIVE_INDEX_VERSION,
+        "files": {},
+    }
+    data["files"][rel] = {"mtime": mtime, "size": size}
+    _save_archive_index(output_dir, data)
+
+
+def _remove_from_archive_index(output_dir: str, full_path: str) -> None:
+    """Remove a file entry from the archive index."""
+    try:
+        rel = os.path.relpath(full_path, output_dir)
+    except ValueError:
+        return
+    data = _load_archive_index(output_dir)
+    if not data or rel not in data.get("files", {}):
+        return
+    del data["files"][rel]
+    _save_archive_index(output_dir, data)
+
+
+def _rebuild_archive_index(output_dir: str, config: dict | None = None) -> dict | None:
+    """
+    Rebuild the archive index from a full scandir walk.
+    Returns the new index data or None on failure.
+    """
+    files: dict[str, dict] = {}
+    for fpath, st in _scandir_walk_files(output_dir, config=config):
+        try:
+            rel = os.path.relpath(fpath, output_dir)
+            if rel.startswith("..") or os.path.isabs(rel):
+                continue
+            files[rel] = {"mtime": st.st_mtime, "size": st.st_size}
+        except ValueError:
+            continue
+    data = {"version": _ARCHIVE_INDEX_VERSION, "files": files}
+    if _save_archive_index(output_dir, data):
+        logger.debug("Rebuilt archive index (%d files)", len(files))
+        return data
+    return None
+
+
+def _scandir_walk_files(
+    top: str,
+    exclude_names: frozenset[str] | None = None,
+    config: dict | None = None,
+):
+    """
+    Walk archive using os.scandir. Yields (filepath, stat) for each file.
+
+    Uses scandir for better performance on large directories (avoids extra
+    stat syscalls on systems that cache DirEntry info).
+    exclude_names: filenames to skip (default: metadata.json).
+    config: if set, call _yield_for_web(config) after each directory.
+    """
+    exclude = exclude_names or frozenset({_METADATA_JSON})
+    try:
+        with os.scandir(top) as it:
+            entries = list(it)
+    except OSError:
+        return
+    dirs = []
+    files = []
+    for entry in entries:
+        try:
+            if entry.name in exclude or entry.name.startswith("."):
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                dirs.append(entry)
+            else:
+                files.append(entry)
+        except OSError:
+            continue
+    for entry in files:
+        try:
+            st = entry.stat(follow_symlinks=False)
+            yield (entry.path, st)
+        except OSError:
+            pass
+    if config:
+        _yield_for_web(config)
+    for d in dirs:
+        yield from _scandir_walk_files(d.path, exclude, config)
+
 
 def _http_get(config: dict, url: str, **kwargs) -> requests.Response:
     """GET with session reuse when available (avoids per-request connection setup)."""
@@ -671,29 +808,27 @@ def _get_existing_frames(output_dir: str, airport_code: str) -> set[tuple[int, i
         )
         return existing
 
-    for root, _dirs, files in os.walk(airport_root):
-        rel = os.path.relpath(root, airport_root)
+    # Walk only this airport's tree; need YYYY/MM/DD/camera (5 parts) for file paths
+    for fpath, st in _scandir_walk_files(airport_root):
+        rel = os.path.relpath(fpath, airport_root)
         parts = rel.split(os.sep)
-        # Need YYYY/MM/DD/camera (4 parts) for camera dirs with files
-        if len(parts) < 4:
+        if len(parts) < 5:  # AIRPORT/YYYY/MM/DD/camera/file -> 5 parts for file path
             continue
-        for fname in files:
-            base, ext = os.path.splitext(fname)
-            if ext.lower() not in (".jpg", ".jpeg", ".webp"):
+        base, ext = os.path.splitext(os.path.basename(fpath))
+        if ext.lower() not in (".jpg", ".jpeg", ".webp"):
+            continue
+        underscore = base.rfind("_")
+        if underscore == -1:
+            continue
+        try:
+            ts = int(base[:underscore])
+            cam = int(base[underscore + 1 :])
+            if st.st_size < MIN_IMAGE_SIZE:
+                _delete_partial_file(fpath)
                 continue
-            underscore = base.rfind("_")
-            if underscore == -1:
-                continue
-            try:
-                ts = int(base[:underscore])
-                cam = int(base[underscore + 1 :])
-                fpath = os.path.join(root, fname)
-                if os.path.getsize(fpath) < MIN_IMAGE_SIZE:
-                    _delete_partial_file(fpath)
-                    continue
-                existing.add((ts, cam))
-            except (ValueError, OSError):
-                continue
+            existing.add((ts, cam))
+        except (ValueError, OSError):
+            continue
     logger.debug("Found %d existing frames for %s", len(existing), airport_code)
     return existing
 
@@ -1121,6 +1256,8 @@ def save_history_image_from_url(
     try:
         os.chmod(filepath, 0o644)
         os.utime(filepath, (frame_ts, frame_ts))
+        st = os.stat(filepath)
+        _add_to_archive_index(output_dir, filepath, float(frame_ts), st.st_size)
         logger.info(
             "Archived history frame %s cam %s @ %s -> %s",
             airport_code,
@@ -1177,6 +1314,11 @@ def save_history_image(
         new_hash = hashlib.md5(image_data).hexdigest()
         if existing_hash == new_hash:
             logger.debug("Skipping duplicate history frame %s", filepath)
+            try:
+                st = os.stat(filepath)
+                _add_to_archive_index(output_dir, filepath, st.st_mtime, st.st_size)
+            except OSError:
+                pass
             return filepath
 
     try:
@@ -1184,6 +1326,7 @@ def save_history_image(
             fh.write(image_data)
         os.chmod(filepath, 0o644)
         os.utime(filepath, (frame_ts, frame_ts))
+        _add_to_archive_index(output_dir, filepath, float(frame_ts), len(image_data))
         logger.info(
             "Archived history frame %s cam %s @ %s -> %s",
             airport_code,
@@ -1242,7 +1385,10 @@ def save_image_from_url(
 
     try:
         os.chmod(filepath, 0o644)
-        os.utime(filepath, (timestamp.timestamp(), timestamp.timestamp()))
+        ts = timestamp.timestamp()
+        os.utime(filepath, (ts, ts))
+        st = os.stat(filepath)
+        _add_to_archive_index(output_dir, filepath, ts, st.st_size)
         logger.info("Archived %s -> %s", url, filepath)
         return filepath
     except OSError as exc:
@@ -1305,6 +1451,11 @@ def save_image(
         new_hash = hashlib.md5(image_data).hexdigest()
         if existing_hash == new_hash:
             logger.debug("Skipping duplicate image %s", filepath)
+            try:
+                st = os.stat(filepath)
+                _add_to_archive_index(output_dir, filepath, st.st_mtime, st.st_size)
+            except OSError:
+                pass
             return filepath
 
     try:
@@ -1313,6 +1464,7 @@ def save_image(
         os.chmod(filepath, 0o644)
         ts = timestamp.timestamp()
         os.utime(filepath, (ts, ts))
+        _add_to_archive_index(output_dir, filepath, ts, len(image_data))
         logger.info("Archived %s -> %s", url, filepath)
         return filepath
     except OSError as exc:
@@ -1338,24 +1490,23 @@ def _collect_archive_files(
     output_dir: str, config: dict | None = None
 ) -> list[tuple[str, float, int]]:
     """
-    Walk archive directory and return list of (path, mtime, size) for all files.
+    Return list of (full_path, mtime, size) for all archive files.
 
-    Used for retention by size (oldest-first deletion).
-    Excludes metadata.json (updated each run, not versioned).
+    Uses file-based index when available; falls back to full scandir walk.
+    On fallback, rebuilds the index for future use.
     """
-    result: list[tuple[str, float, int]] = []
-    for root, _dirs, files in os.walk(output_dir):
-        for fname in files:
-            if fname == "metadata.json":
-                continue
-            fpath = os.path.join(root, fname)
-            try:
-                stat = os.stat(fpath)
-                result.append((fpath, stat.st_mtime, stat.st_size))
-            except OSError as exc:
-                logger.debug("Retention: could not stat %s: %s", fpath, exc)
-        if config:
-            _yield_for_web(config)
+    data = _load_archive_index(output_dir)
+    if data and data.get("files"):
+        result: list[tuple[str, float, int]] = []
+        for rel, meta in data["files"].items():
+            full = os.path.join(output_dir, rel)
+            result.append((full, meta["mtime"], meta["size"]))
+        return result
+    # Fallback: full scan and rebuild index
+    result = []
+    for fpath, st in _scandir_walk_files(output_dir, config=config):
+        result.append((fpath, st.st_mtime, st.st_size))
+    _rebuild_archive_index(output_dir, config)
     return result
 
 
@@ -1464,6 +1615,7 @@ def apply_retention(config: dict) -> int:
             if mtime < cutoff_ts:
                 try:
                     os.remove(fpath)
+                    _remove_from_archive_index(output_dir, fpath)
                     deleted += 1
                 except OSError as exc:
                     logger.warning("Retention: failed to remove %s: %s", fpath, exc)
@@ -1479,6 +1631,7 @@ def apply_retention(config: dict) -> int:
                     break
                 try:
                     os.remove(fpath)
+                    _remove_from_archive_index(output_dir, fpath)
                     deleted += 1
                     removed_bytes += size
                 except OSError as exc:
@@ -1496,18 +1649,14 @@ def apply_retention(config: dict) -> int:
                 retention_days,
                 cutoff_dt.isoformat(),
             )
-            for root, _dirs, files in os.walk(output_dir):
-                for fname in files:
-                    if fname == "metadata.json":
-                        continue
-                    fpath = os.path.join(root, fname)
+            for fpath, mtime, _size in _collect_archive_files(output_dir, config):
+                if mtime < cutoff_ts:
                     try:
-                        if os.path.getmtime(fpath) < cutoff_ts:
-                            os.remove(fpath)
-                            deleted += 1
+                        os.remove(fpath)
+                        _remove_from_archive_index(output_dir, fpath)
+                        deleted += 1
                     except OSError as exc:
                         logger.warning("Retention: failed to remove %s: %s", fpath, exc)
-                _yield_for_web(config)
 
         if retention_max_bytes > 0:
             files_sorted = _collect_archive_files(output_dir, config)
@@ -1532,6 +1681,7 @@ def apply_retention(config: dict) -> int:
                         break
                     try:
                         os.remove(fpath)
+                        _remove_from_archive_index(output_dir, fpath)
                         deleted += 1
                         removed_bytes += size
                     except OSError as exc:

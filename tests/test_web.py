@@ -2,6 +2,7 @@
 Tests for app.web — Flask routes, helpers, and form handling.
 """
 
+import json
 import os
 import tempfile
 from unittest.mock import MagicMock, patch
@@ -228,7 +229,7 @@ def test_archive_stats_returns_empty_when_output_dir_missing():
 
 
 def test_archive_stats_counts_files_and_airports():
-    """_archive_stats counts total files, size, and unique airports."""
+    """_archive_stats counts files, size, airports (uses index or scandir fallback)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         path1 = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "cam_a")
         path2 = os.path.join(tmpdir, "KAWO", "2024", "06", "15", "cam_b")
@@ -246,17 +247,48 @@ def test_archive_stats_counts_files_and_airports():
     assert set(stats["airports"]) == {"KSPB", "KAWO"}
 
 
+def test_archive_stats_uses_index_when_present():
+    """_archive_stats uses index when available for fast lookup."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        idx_path = os.path.join(tmpdir, ".archive_index.json")
+        index_data = {
+            "version": 1,
+            "files": {
+                "KSPB/2024/06/15/a.jpg": {"mtime": 1718456780.0, "size": 1024 * 1024},
+                "KAWO/2024/06/15/b.jpg": {"mtime": 1718456780.0, "size": 512 * 1024},
+            },
+        }
+        with open(idx_path, "w") as fh:
+            json.dump(index_data, fh)
+
+        stats = _archive_stats(tmpdir)
+
+    assert stats["total_files"] == 2
+    assert stats["total_size_mb"] >= 1.0
+    assert set(stats["airports"]) == {"KSPB", "KAWO"}
+
+
 def test_archive_stats_handles_getsize_oserror():
-    """_archive_stats skips files when os.stat raises OSError."""
+    """_archive_stats returns zeros when scandir fallback yields no files."""
     with tempfile.TemporaryDirectory() as tmpdir:
         path = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "north_runway")
         os.makedirs(path, exist_ok=True)
         with open(os.path.join(path, "a.jpg"), "wb") as fh:
             fh.write(b"data")
 
-        with patch(
-            "app.web.os.stat",
-            side_effect=OSError(13, "Permission denied"),
+        def empty_scandir(*args, **kwargs):
+            return
+            yield
+
+        with (
+            patch(
+                "app.archiver._load_archive_index",
+                return_value=None,
+            ),
+            patch(
+                "app.archiver._scandir_walk_files",
+                side_effect=empty_scandir,
+            ),
         ):
             stats = _archive_stats(tmpdir)
 

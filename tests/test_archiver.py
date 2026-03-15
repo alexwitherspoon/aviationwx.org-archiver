@@ -1704,6 +1704,174 @@ def test_oldest_directory_date_returns_none_when_empty():
         assert _oldest_directory_date(tmpdir) is None
 
 
+# ---------------------------------------------------------------------------
+# Archive index tests
+# ---------------------------------------------------------------------------
+
+
+def test_load_archive_index_returns_none_when_missing():
+    """_load_archive_index returns None when index file does not exist."""
+    from app.archiver import _load_archive_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        assert _load_archive_index(tmpdir) is None
+
+
+def test_load_archive_index_returns_none_when_corrupt():
+    """_load_archive_index returns None when index is invalid JSON or wrong format."""
+    from app.archiver import _load_archive_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        idx_path = os.path.join(tmpdir, ".archive_index.json")
+        with open(idx_path, "w") as fh:
+            fh.write("not valid json")
+        assert _load_archive_index(tmpdir) is None
+
+        with open(idx_path, "w") as fh:
+            json.dump({"version": 99, "files": {}}, fh)
+        assert _load_archive_index(tmpdir) is None
+
+        with open(idx_path, "w") as fh:
+            json.dump({"version": 1}, fh)
+        assert _load_archive_index(tmpdir) is None
+
+
+def test_add_and_remove_archive_index():
+    """_add_to_archive_index and _remove_from_archive_index update the index."""
+    from app.archiver import (
+        _add_to_archive_index,
+        _load_archive_index,
+        _remove_from_archive_index,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fpath = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "img.jpg")
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
+        with open(fpath, "wb") as fh:
+            fh.write(b"data")
+
+        _add_to_archive_index(tmpdir, fpath, 1234567890.0, 4)
+        data = _load_archive_index(tmpdir)
+        assert data is not None
+        rel = "KSPB/2024/06/15/img.jpg"
+        assert rel in data["files"]
+        assert data["files"][rel] == {"mtime": 1234567890.0, "size": 4}
+
+        _remove_from_archive_index(tmpdir, fpath)
+        data = _load_archive_index(tmpdir)
+        assert data is not None
+        assert rel not in data["files"]
+
+
+def test_rebuild_archive_index():
+    """_rebuild_archive_index builds index from scandir walk."""
+    from app.archiver import _rebuild_archive_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path1 = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "a.jpg")
+        path2 = os.path.join(tmpdir, "KAWO", "2024", "06", "15", "b.jpg")
+        os.makedirs(os.path.dirname(path1), exist_ok=True)
+        os.makedirs(os.path.dirname(path2), exist_ok=True)
+        with open(path1, "wb") as fh:
+            fh.write(b"x" * 100)
+        with open(path2, "wb") as fh:
+            fh.write(b"y" * 200)
+
+        result = _rebuild_archive_index(tmpdir)
+        assert result is not None
+        assert len(result["files"]) == 2
+        assert "KSPB/2024/06/15/a.jpg" in result["files"]
+        assert "KAWO/2024/06/15/b.jpg" in result["files"]
+        assert result["files"]["KSPB/2024/06/15/a.jpg"]["size"] == 100
+        assert result["files"]["KAWO/2024/06/15/b.jpg"]["size"] == 200
+
+
+def test_collect_archive_files_uses_index_when_present():
+    """_collect_archive_files uses index when available."""
+    from app.archiver import _add_to_archive_index, _collect_archive_files
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fpath = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "img.jpg")
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
+        with open(fpath, "wb") as fh:
+            fh.write(b"data")
+        os.remove(fpath)
+
+        _add_to_archive_index(tmpdir, fpath, 1234567890.0, 4)
+        files = _collect_archive_files(tmpdir)
+        assert len(files) == 1
+        full, mtime, size = files[0]
+        assert full.endswith("img.jpg")
+        assert mtime == 1234567890.0
+        assert size == 4
+
+
+def test_collect_archive_files_falls_back_to_scandir_when_no_index():
+    """_collect_archive_files falls back to scandir and rebuilds index when missing."""
+    from app.archiver import _collect_archive_files, _load_archive_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path1 = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "a.jpg")
+        os.makedirs(os.path.dirname(path1), exist_ok=True)
+        with open(path1, "wb") as fh:
+            fh.write(b"x" * 50)
+
+        files = _collect_archive_files(tmpdir)
+        assert len(files) == 1
+        full, mtime, size = files[0]
+        assert full.endswith("a.jpg")
+        assert size == 50
+
+        data = _load_archive_index(tmpdir)
+        assert data is not None
+        assert "KSPB/2024/06/15/a.jpg" in data["files"]
+
+
+def test_save_image_adds_to_index():
+    """save_image adds new files to the archive index."""
+    from app.archiver import _load_archive_index, save_image
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {
+            "archive": {"output_dir": tmpdir},
+            "airports": {"archive_all": False, "selected": []},
+        }
+        result = save_image(
+            b"\xff\xd8\xff\xe0\x00\x10JFIF",
+            "https://example.com/img.jpg",
+            "KSPB",
+            config,
+        )
+        assert result is not None
+        data = _load_archive_index(tmpdir)
+        assert data is not None
+        assert any("img.jpg" in rel or "image" in rel for rel in data["files"])
+
+
+def test_apply_retention_removes_from_index():
+    """apply_retention removes deleted files from the archive index."""
+    import time
+
+    from app.archiver import _load_archive_index, apply_retention
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fpath = os.path.join(tmpdir, "old.jpg")
+        with open(fpath, "wb") as fh:
+            fh.write(b"x" * 1024)
+        old_mtime = time.time() - (2 * 86400 + 1)
+        os.utime(fpath, (old_mtime, old_mtime))
+
+        config = {
+            "archive": {"output_dir": tmpdir, "retention_days": 1},
+        }
+        deleted = apply_retention(config)
+        assert deleted == 1
+
+        data = _load_archive_index(tmpdir)
+        assert data is not None
+        assert "old.jpg" not in data["files"]
+
+
 def test_apply_retention_zero_means_no_deletion():
     """retention_days=0 should not delete any files."""
     from app.archiver import apply_retention
@@ -2674,6 +2842,7 @@ def test_apply_retention_logs_warning_on_remove_failure():
         fpath = os.path.join(tmpdir, "old.jpg")
         with open(fpath, "wb") as fh:
             fh.write(b"data")
+        os.utime(fpath, (0, 0))  # Set mtime to epoch so file appears old
 
         config = {"archive": {"output_dir": tmpdir, "retention_days": 365}}
 
@@ -2681,9 +2850,8 @@ def test_apply_retention_logs_warning_on_remove_failure():
             "app.archiver.os.remove",
             side_effect=OSError(13, "Permission denied"),
         ):
-            with patch("app.archiver.os.path.getmtime", return_value=0):
-                with patch("app.archiver.logger") as mock_logger:
-                    deleted = apply_retention(config)
+            with patch("app.archiver.logger") as mock_logger:
+                deleted = apply_retention(config)
 
         assert deleted == 0
         mock_logger.warning.assert_called()
