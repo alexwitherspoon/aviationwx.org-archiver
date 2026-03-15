@@ -39,7 +39,7 @@ Repository custom instructions for GitHub Copilot coding agent and code review. 
 ```
 aviationwx.org-archiver/
 ├── app/
-│   ├── archiver.py    # Core fetch/save logic
+│   ├── archiver.py    # Core fetch/save logic, file index, retention
 │   ├── config.py      # YAML config loader
 │   ├── scheduler.py   # APScheduler background job
 │   └── web.py         # Flask GUI
@@ -48,6 +48,8 @@ aviationwx.org-archiver/
 ├── tests/
 └── Dockerfile
 ```
+
+**Archive index**: `output_dir/.archive_index.json` — file-based index for fast stats/retention. Atomic writes, inter-process locking (filelock: fcntl/msvcrt with SoftFileLock fallback for NFS), batched updates per run. Uses scandir fallback when missing/stale; auto-rebuilds.
 
 ---
 

@@ -275,6 +275,7 @@ def test_archive_job_clears_stale_lock_and_proceeds():
         "next_run": None,
         "running": True,  # Stuck from previous run
         "_running_since": time.time() - (45 * 60),  # 45 min ago — past 30 min threshold
+        "_running_job": "archive",  # Stale override only applies to archive
         "run_count": 0,
         "log_entries": [],
     }
@@ -319,6 +320,173 @@ def test_archive_job_sets_running_false_on_exception():
                             _archive_job(config)
 
     assert state_ref["running"] is False
+
+
+def test_archive_job_skips_when_retention_running():
+    """_archive_job skips when retention run is in progress (no stale override)."""
+    from app.scheduler import _archive_job
+
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["airports"]["selected"] = ["KSPB"]
+    config["schedule"]["interval_minutes"] = 15
+
+    # Retention running for 45 min — archive should skip (retention can run for hours)
+    state_ref = {
+        "last_run": None,
+        "running": True,
+        "_running_since": time.time() - (45 * 60),
+        "_running_job": "retention",
+        "run_count": 0,
+        "log_entries": [],
+    }
+
+    with patch("app.scheduler._state_lock"):
+        with patch("app.scheduler._state", state_ref):
+            with patch("app.worker.run_archive") as mock_run:
+                with patch("app.scheduler._append_log"):
+                    _archive_job(config)
+
+    mock_run.assert_not_called()
+
+
+def test_retention_job_skips_when_archive_running():
+    """_retention_job skips when archive run is in progress."""
+    from app.scheduler import _retention_job
+
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["archive"]["output_dir"] = "/tmp/archive"
+    config["archive"]["retention_days"] = 7
+
+    with patch("app.scheduler._state_lock"):
+        with patch("app.scheduler._state", {"running": True}):
+            with patch("app.worker.run_retention_worker") as mock_run:
+                with patch("app.scheduler._append_log"):
+                    _retention_job(config)
+
+    mock_run.assert_not_called()
+
+
+def test_archive_job_updates_next_run_after_completion():
+    """_archive_job calls _update_next_run so dashboard shows fresh next run."""
+    from datetime import datetime, timezone
+
+    from app.scheduler import _archive_job
+
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["airports"]["selected"] = ["KSPB"]
+
+    next_run_dt = datetime(2026, 3, 20, 12, 0, 0, tzinfo=timezone.utc)
+    mock_job = MagicMock()
+    mock_job.next_run_time = next_run_dt
+    mock_scheduler = MagicMock()
+    mock_scheduler.get_job.return_value = mock_job
+
+    state_ref = {
+        "last_run": None,
+        "last_stats": None,
+        "next_run": None,
+        "running": False,
+        "run_count": 0,
+        "log_entries": [],
+    }
+
+    with _mock_process_to_run_synchronously():
+        with patch("app.scheduler._state_lock"):
+            with patch("app.scheduler._state", state_ref):
+                with patch("app.scheduler._scheduler_instance", mock_scheduler):
+                    with patch("app.worker.run_archive") as mock_run:
+                        mock_run.return_value = {
+                            "airports_processed": 1,
+                            "images_fetched": 0,
+                            "images_saved": 0,
+                            "errors": 0,
+                        }
+                        with patch("app.scheduler._append_log"):
+                            _archive_job(config)
+
+    mock_scheduler.get_job.assert_called_with("archive")
+    assert state_ref["next_run"] == next_run_dt
+
+
+def test_archive_job_rebuilds_index_when_worker_exits_without_result():
+    """_archive_job triggers index rebuild when worker dies before completing."""
+    from app.scheduler import _archive_job
+
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["airports"]["selected"] = ["KSPB"]
+    config["archive"]["output_dir"] = "/tmp/archive"
+
+    # Process that exits immediately without putting result on queue
+    def crash_immediately(target=None, args=None, **kwargs):
+        m = MagicMock()
+        m.start = MagicMock()
+        m.join = MagicMock()
+        m.is_alive = MagicMock(return_value=False)
+        return m
+
+    state_ref = {
+        "last_run": None,
+        "running": False,
+        "run_count": 0,
+        "log_entries": [],
+    }
+
+    with patch("app.scheduler.multiprocessing.Process", side_effect=crash_immediately):
+        with patch("app.scheduler._state_lock"):
+            with patch("app.scheduler._state", state_ref):
+                with patch("app.scheduler._append_log"):
+                    with patch(
+                        "app.scheduler._rebuild_index_on_worker_crash"
+                    ) as mock_rebuild:
+                        with patch("app.scheduler.logger"):
+                            _archive_job(config)
+
+    mock_rebuild.assert_called_once_with(config)
+
+
+def test_retention_job_rebuilds_index_when_worker_exits_without_result():
+    """_retention_job triggers index rebuild when worker dies before completing."""
+    import multiprocessing
+
+    from app.scheduler import MSG_COMPLETE, _retention_job
+
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["archive"]["output_dir"] = "/tmp/archive"
+    config["archive"]["retention_days"] = 7
+    config["airports"]["selected"] = ["KSPB"]  # Pass validate_config
+
+    # Pre-fill queue so first get() returns crash result
+    result_queue = multiprocessing.Queue()
+    result_queue.put(
+        {
+            "type": MSG_COMPLETE,
+            "stats": None,
+            "error": "Retention worker exited without result",
+        }
+    )
+
+    def fake_process(target=None, args=None, **kwargs):
+        m = MagicMock()
+        m.start = MagicMock()
+        m.join = MagicMock()
+        m.is_alive = MagicMock(return_value=False)
+        return m
+
+    # Patch _rebuild_index_on_worker_crash to verify it's invoked (avoids import
+    # timing; scheduler does local import when crash path runs)
+    with patch("app.scheduler.multiprocessing.Process", side_effect=fake_process):
+        with patch("app.scheduler.multiprocessing.Queue", return_value=result_queue):
+            with patch("app.scheduler._state_lock"):
+                state = {"running": False, "log_entries": []}
+                with patch("app.scheduler._state", state):
+                    with patch("app.scheduler._append_log"):
+                        with patch(
+                            "app.scheduler._rebuild_index_on_worker_crash",
+                            wraps=lambda cfg: None,
+                        ) as mock_rebuild:
+                            with patch("app.scheduler.logger"):
+                                _retention_job(config)
+                            mock_rebuild.assert_called_once_with(config)
 
 
 def test_append_log_trims_when_exceeding_max_bytes():

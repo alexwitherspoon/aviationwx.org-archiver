@@ -16,7 +16,8 @@ Part of the [AviationWX.org](https://github.com/alexwitherspoon/aviationwx) proj
 - **Process-based workers** — archive jobs run in a separate process to avoid GIL contention; web UI stays responsive during runs
 - **Live log streaming** — worker forwards archiver logs to the main process in real time for the web UI
 - **Retention policy** — optional automatic cleanup of files older than N days
-- **Minimal dependencies** — Python + Flask + Requests + PyYAML + APScheduler
+- **File-based index** — fast stats and retention via `.archive_index.json`; atomic writes, inter-process locking (Windows/NFS supported via fallback), batched updates per run; falls back to full scan when missing or stale; auto-rebuilds on manual file changes
+- **Minimal dependencies** — Python + Flask + Requests + PyYAML + APScheduler + filelock
 - **Docker-first** — simple `docker compose up` to get started
 
 ## Quick Start
@@ -130,6 +131,7 @@ docker run -d \
 
 ```
 archive/
+├── .archive_index.json        # File index for fast stats/retention (auto-managed; do not edit)
 ├── KSPB/
 │   ├── metadata.json          # Airport + webcams API response (updated each run)
 │   └── 2024/
@@ -150,6 +152,7 @@ archive/
 ```
 
 - **metadata.json** — Full airport and webcams API response; overwritten each run (not versioned).
+- **.archive_index.json** — File index for fast stats and retention. Atomic writes, inter-process locking (`.archive_index.lock`), batched updates per run. Auto-updated on save/delete. Before use, a random sample of entries is spot-checked on disk; if any are missing or path-unsafe, the index is rebuilt from a full scandir. Rebuilds also occur on ENOENT during retention. Locking works on local FS, Windows, and NFS (soft-lock fallback). Delete this file to force a full rebuild.
 - **Camera names** — Sanitized for Linux: lowercase, spaces and hyphens → underscores.
 
 ## Web GUI
@@ -255,7 +258,7 @@ Create the host paths first (e.g. `mkdir -p /mnt/user/appdata/aviationwx/archive
 ```
 aviationwx.org-archiver/
 ├── app/
-│   ├── archiver.py        # image fetching and archival logic
+│   ├── archiver.py        # image fetching, archival logic, file index, retention
 │   ├── config.py          # YAML config loader/saver
 │   ├── scheduler.py       # APScheduler background job
 │   ├── web.py             # Flask web GUI

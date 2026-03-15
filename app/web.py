@@ -90,7 +90,7 @@ def _parse_timestamp_from_filename(filename: str) -> str | None:
             ts = int(first)
             dt = datetime.fromtimestamp(ts, tz=timezone.utc)
             return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-        except (ValueError, OSError):
+        except (ValueError, OSError):  # fmt: skip
             return None
     date_ok = re.match(r"^\d{8}$", first)
     time_ok = len(parts) >= 2 and re.match(r"^\d{6}$", parts[1])
@@ -114,36 +114,111 @@ def _archive_tree_uncached(output_dir: str) -> dict:
 
     Structure: {airport: {year: {month: {day: {camera: [filenames]}}}}}
     Layout: output_dir/AIRPORT/YYYY/MM/DD/camera_name/
+    Uses scandir for better performance on large archives.
     """
     tree = {}
     if not os.path.isdir(output_dir):
         return tree
 
-    for airport in sorted(os.listdir(output_dir)):
-        airport_path = os.path.join(output_dir, airport)
-        if not os.path.isdir(airport_path):
-            continue
+    try:
+        with os.scandir(output_dir) as it:
+            dirs = []
+            for e in it:
+                try:
+                    if e.is_dir(follow_symlinks=False) and not e.name.startswith("."):
+                        dirs.append(e)
+                except OSError:
+                    pass
+            airports = sorted(dirs, key=lambda e: e.name)
+    except OSError:
+        return tree
+
+    for airport_entry in airports:
+        airport = airport_entry.name
         tree[airport] = {}
-        for year in sorted(os.listdir(airport_path)):
-            year_path = os.path.join(airport_path, year)
-            if not os.path.isdir(year_path) or not year.isdigit():
-                continue
+        try:
+            with os.scandir(airport_entry.path) as it:
+                dirs = []
+                for e in it:
+                    try:
+                        if (
+                            e.is_dir(follow_symlinks=False)
+                            and e.name.isdigit()
+                            and len(e.name) == 4
+                        ):
+                            dirs.append(e)
+                    except OSError:
+                        pass
+                years = sorted(dirs, key=lambda e: e.name)
+        except OSError:
+            continue
+        for year_entry in years:
+            year = year_entry.name
             tree[airport][year] = {}
-            for month in sorted(os.listdir(year_path)):
-                month_path = os.path.join(year_path, month)
-                if not os.path.isdir(month_path) or not month.isdigit():
-                    continue
+            try:
+                with os.scandir(year_entry.path) as it:
+                    dirs = []
+                    for e in it:
+                        try:
+                            if (
+                                e.is_dir(follow_symlinks=False)
+                                and e.name.isdigit()
+                                and len(e.name) == 2
+                            ):
+                                dirs.append(e)
+                        except OSError:
+                            pass
+                    months = sorted(dirs, key=lambda e: e.name)
+            except OSError:
+                continue
+            for month_entry in months:
+                month = month_entry.name
                 tree[airport][year][month] = {}
-                for day in sorted(os.listdir(month_path)):
-                    day_path = os.path.join(month_path, day)
-                    if not os.path.isdir(day_path) or not day.isdigit():
-                        continue
+                try:
+                    with os.scandir(month_entry.path) as it:
+                        dirs = []
+                        for e in it:
+                            try:
+                                if (
+                                    e.is_dir(follow_symlinks=False)
+                                    and e.name.isdigit()
+                                    and len(e.name) == 2
+                                ):
+                                    dirs.append(e)
+                            except OSError:
+                                pass
+                        days = sorted(dirs, key=lambda e: e.name)
+                except OSError:
+                    continue
+                for day_entry in days:
+                    day = day_entry.name
                     tree[airport][year][month][day] = {}
-                    for camera in sorted(os.listdir(day_path)):
-                        camera_path = os.path.join(day_path, camera)
-                        if not os.path.isdir(camera_path):
-                            continue
-                        files = sorted(os.listdir(camera_path))
+                    try:
+                        with os.scandir(day_entry.path) as it:
+                            dirs = []
+                            for e in it:
+                                try:
+                                    if e.is_dir(follow_symlinks=False):
+                                        dirs.append(e)
+                                except OSError:
+                                    pass
+                            cameras = sorted(dirs, key=lambda e: e.name)
+                    except OSError:
+                        continue
+                    for camera_entry in cameras:
+                        camera = camera_entry.name
+                        try:
+                            with os.scandir(camera_entry.path) as it:
+                                names = []
+                                for e in it:
+                                    try:
+                                        if e.is_file(follow_symlinks=False):
+                                            names.append(e.name)
+                                    except OSError:
+                                        pass
+                                files = sorted(names)
+                        except OSError:
+                            files = []
                         tree[airport][year][month][day][camera] = files
 
     return tree
@@ -232,8 +307,21 @@ def _disk_usage(path: str) -> dict | None:
         return None
 
 
-def _archive_stats_uncached(output_dir: str) -> dict:
-    """Return basic stats about the archive directory."""
+def _archive_stats_uncached(output_dir: str, config: dict | None = None) -> dict:
+    """
+    Return basic stats about the archive directory. Uses index when available.
+
+    Reads index without holding the lock (best-effort). Spot-check validates;
+    on failure we rebuild under lock. Worst case: slightly stale stats or
+    redundant rebuild, not corruption.
+    """
+    from app.archiver import (
+        _index_entries_valid,
+        _load_archive_index,
+        _rebuild_archive_index,
+        _scandir_walk_files,
+    )
+
     total_files = 0
     total_size = 0
     airports: set = set()
@@ -246,21 +334,40 @@ def _archive_stats_uncached(output_dir: str) -> dict:
             "disk_usage": _disk_usage(os.path.dirname(output_dir) or "/"),
         }
 
-    for root, _dirs, files in os.walk(output_dir):
-        for fname in files:
-            if fname == "metadata.json":
-                continue
-            fpath = os.path.join(root, fname)
-            try:
-                st = os.stat(fpath)
-                total_files += 1
-                total_size += st.st_size
-                # archive: output_dir/AIRPORT/YYYY/MM/DD/file — airport is first
-                parts = fpath.replace(output_dir, "").strip(os.sep).split(os.sep)
-                if len(parts) >= 1:
-                    airports.add(parts[0])
-            except OSError as exc:
-                logger.debug("Could not stat %s: %s", fpath, exc)
+    data = _load_archive_index(output_dir)
+    use_index = False
+    if data and "files" in data and _index_entries_valid(output_dir, data):
+        from app.archiver import _rel_path_safe
+
+        files = data.get("files", {})
+        for rel_path, entry in files.items():
+            if not _rel_path_safe(output_dir, rel_path):
+                break
+            if not isinstance(entry, dict):
+                break
+            size = entry.get("size")
+            if not isinstance(size, int):
+                break
+            total_files += 1
+            total_size += size
+            parts = os.path.normpath(rel_path).split(os.sep)
+            if len(parts) >= 1:
+                airports.add(parts[0])
+        else:
+            use_index = True
+    if not use_index:
+        total_files = 0
+        total_size = 0
+        airports.clear()
+        collected: list[tuple[str, float, int]] = []
+        for fpath, st in _scandir_walk_files(output_dir, config=None):
+            total_files += 1
+            total_size += st.st_size
+            collected.append((fpath, st.st_mtime, st.st_size))
+            parts = os.path.relpath(fpath, output_dir).split(os.sep)
+            if len(parts) >= 1:
+                airports.add(parts[0])
+        _rebuild_archive_index(output_dir, config=None, pre_collected=collected)
 
     return {
         "total_files": total_files,
@@ -270,7 +377,7 @@ def _archive_stats_uncached(output_dir: str) -> dict:
     }
 
 
-def _archive_stats(output_dir: str) -> dict:
+def _archive_stats(output_dir: str, config: dict | None = None) -> dict:
     """Cached wrapper for _archive_stats_uncached."""
     _maybe_invalidate_archive_cache()
     key = (output_dir, "stats")
@@ -279,7 +386,7 @@ def _archive_stats(output_dir: str) -> dict:
         ts, data = _archive_cache[key]
         if now - ts < _ARCHIVE_CACHE_TTL_SEC:
             return data
-    data = _archive_stats_uncached(output_dir)
+    data = _archive_stats_uncached(output_dir, config)
     _archive_cache[key] = (now, data)
     return data
 
@@ -295,7 +402,7 @@ def dashboard():
     config_errors = validate_config(config)
     state = get_state()
     output_dir = config["archive"]["output_dir"]
-    archive_stats = _archive_stats(output_dir)
+    archive_stats = _archive_stats(output_dir, config)
     log_count = config["web"].get("log_display_count", DEFAULT_LOG_DISPLAY_COUNT)
     recent_logs = list(reversed(state.get("log_entries", [])))[:log_count]
     return render_template(
@@ -407,7 +514,7 @@ def api_status():
     state = get_state()
     config = app.config["ARCHIVER_CONFIG"]
     output_dir = config["archive"]["output_dir"]
-    archive_stats = _archive_stats(output_dir)
+    archive_stats = _archive_stats(output_dir, config)
     response = {
         "status": "ok",
         "version": VERSION,
