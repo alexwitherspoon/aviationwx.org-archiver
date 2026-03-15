@@ -286,8 +286,7 @@ def test_archive_stats_returns_zero_when_scan_yields_no_files():
             fh.write(b"data")
 
         def empty_scandir(*args, **kwargs):
-            return
-            yield
+            yield from ()
 
         with (
             patch(

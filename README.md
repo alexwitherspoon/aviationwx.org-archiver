@@ -152,7 +152,7 @@ archive/
 ```
 
 - **metadata.json** — Full airport and webcams API response; overwritten each run (not versioned).
-- **.archive_index.json** — File index for fast stats and retention. Auto-updated on save/delete. Before use, a random sample of entries is spot-checked on disk; if any are missing or invalid, the index is rebuilt from a full scandir. Rebuilds also occur on ENOENT during retention. Delete this file to force a full rebuild.
+- **.archive_index.json** — File index for fast stats and retention. Auto-updated on save/delete. Before use, a random sample of entries is spot-checked on disk; if any are missing or path-unsafe, the index is rebuilt from a full scandir. Rebuilds also occur on ENOENT during retention. Delete this file to force a full rebuild.
 - **Camera names** — Sanitized for Linux: lowercase, spaces and hyphens → underscores.
 
 ## Web GUI

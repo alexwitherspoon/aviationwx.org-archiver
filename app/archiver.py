@@ -141,20 +141,36 @@ def _index_entries_valid(output_dir: str, data: dict, sample_size: int = 10) -> 
     return True
 
 
-def _rebuild_archive_index(output_dir: str, config: dict | None = None) -> dict | None:
+def _rebuild_archive_index(
+    output_dir: str,
+    config: dict | None = None,
+    pre_collected: list[tuple[str, float, int]] | None = None,
+) -> dict | None:
     """
-    Rebuild the archive index from a full scandir walk.
+    Rebuild the archive index from a full scandir walk or pre-collected results.
+
     Returns the new index data or None on failure.
+    pre_collected: optional list of (full_path, mtime, size) to avoid double scan.
     """
     files: dict[str, dict] = {}
-    for fpath, st in _scandir_walk_files(output_dir, config=config):
-        try:
-            rel = os.path.relpath(fpath, output_dir)
-            if rel.startswith("..") or os.path.isabs(rel):
+    if pre_collected is not None:
+        for fpath, mtime, size in pre_collected:
+            try:
+                rel = os.path.relpath(fpath, output_dir)
+                if rel.startswith("..") or os.path.isabs(rel):
+                    continue
+                files[rel] = {"mtime": mtime, "size": size}
+            except ValueError:
                 continue
-            files[rel] = {"mtime": st.st_mtime, "size": st.st_size}
-        except ValueError:
-            continue
+    else:
+        for fpath, st in _scandir_walk_files(output_dir, config=config):
+            try:
+                rel = os.path.relpath(fpath, output_dir)
+                if rel.startswith("..") or os.path.isabs(rel):
+                    continue
+                files[rel] = {"mtime": st.st_mtime, "size": st.st_size}
+            except ValueError:
+                continue
     data = {"version": _ARCHIVE_INDEX_VERSION, "files": files}
     if _save_archive_index(output_dir, data):
         logger.debug("Rebuilt archive index (%d files)", len(files))
@@ -1550,11 +1566,11 @@ def _collect_archive_files(
             result.append((full, float(mtime), size))
         else:
             return result
-    # Fallback: full scan and rebuild index
+    # Fallback: full scan and rebuild index (single walk)
     result = []
     for fpath, st in _scandir_walk_files(output_dir, config=config):
         result.append((fpath, st.st_mtime, st.st_size))
-    _rebuild_archive_index(output_dir, config)
+    _rebuild_archive_index(output_dir, config, pre_collected=result)
     return result
 
 
