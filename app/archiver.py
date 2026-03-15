@@ -206,7 +206,9 @@ def _rel_path_safe(output_dir: str, rel: str) -> bool:
     try:
         full = os.path.normpath(os.path.join(output_dir, rel))
         base = os.path.normpath(output_dir)
-        return full == base or full.startswith(base + os.sep)
+        base_clean = base.rstrip(os.sep) or base
+        prefix = (base_clean + os.sep) if base_clean else os.sep
+        return full == base_clean or full.startswith(prefix)
     except (ValueError, OSError):  # fmt: skip
         return False
 
@@ -287,21 +289,20 @@ def _scandir_walk_files(
     exclude = exclude_names or frozenset({_METADATA_JSON})
     try:
         with os.scandir(top) as it:
-            entries = list(it)
+            dirs = []
+            files = []
+            for entry in it:
+                try:
+                    if entry.name in exclude or entry.name.startswith("."):
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        dirs.append(entry)
+                    else:
+                        files.append(entry)
+                except OSError:
+                    continue
     except OSError:
         return
-    dirs = []
-    files = []
-    for entry in entries:
-        try:
-            if entry.name in exclude or entry.name.startswith("."):
-                continue
-            if entry.is_dir(follow_symlinks=False):
-                dirs.append(entry)
-            else:
-                files.append(entry)
-        except OSError:
-            continue
     for entry in files:
         try:
             st = entry.stat(follow_symlinks=False)

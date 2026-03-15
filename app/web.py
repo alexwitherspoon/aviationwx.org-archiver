@@ -360,14 +360,14 @@ def _archive_stats_uncached(output_dir: str, config: dict | None = None) -> dict
         total_size = 0
         airports.clear()
         collected: list[tuple[str, float, int]] = []
-        for fpath, st in _scandir_walk_files(output_dir, config=config):
+        for fpath, st in _scandir_walk_files(output_dir, config=None):
             total_files += 1
             total_size += st.st_size
             collected.append((fpath, st.st_mtime, st.st_size))
             parts = os.path.relpath(fpath, output_dir).split(os.sep)
             if len(parts) >= 1:
                 airports.add(parts[0])
-        _rebuild_archive_index(output_dir, config, pre_collected=collected)
+        _rebuild_archive_index(output_dir, config=None, pre_collected=collected)
 
     return {
         "total_files": total_files,
