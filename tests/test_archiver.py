@@ -1681,29 +1681,6 @@ def test_parse_storage_gb_returns_zero_for_empty_or_invalid():
 # ---------------------------------------------------------------------------
 
 
-def test_oldest_directory_date_returns_min_date():
-    """_oldest_directory_date finds oldest YYYY/MM/DD in archive structure."""
-    from app.archiver import _oldest_directory_date
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # KSPB/2024/06/15/cam/file.jpg and KSPB/2024/06/20/cam/file.jpg
-        os.makedirs(os.path.join(tmpdir, "KSPB", "2024", "06", "15", "cam"))
-        os.makedirs(os.path.join(tmpdir, "KSPB", "2024", "06", "20", "cam"))
-        oldest = _oldest_directory_date(tmpdir)
-    assert oldest is not None
-    assert oldest.year == 2024
-    assert oldest.month == 6
-    assert oldest.day == 15
-
-
-def test_oldest_directory_date_returns_none_when_empty():
-    """_oldest_directory_date returns None when no date dirs."""
-    from app.archiver import _oldest_directory_date
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        assert _oldest_directory_date(tmpdir) is None
-
-
 # ---------------------------------------------------------------------------
 # Archive index tests
 # ---------------------------------------------------------------------------

@@ -308,7 +308,13 @@ def _disk_usage(path: str) -> dict | None:
 
 
 def _archive_stats_uncached(output_dir: str, config: dict | None = None) -> dict:
-    """Return basic stats about the archive directory. Uses index when available."""
+    """
+    Return basic stats about the archive directory. Uses index when available.
+
+    Reads index without holding the lock (best-effort). Spot-check validates;
+    on failure we rebuild under lock. Worst case: slightly stale stats or
+    redundant rebuild, not corruption.
+    """
     from app.archiver import (
         _index_entries_valid,
         _load_archive_index,

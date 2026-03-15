@@ -24,12 +24,14 @@ logger = logging.getLogger(__name__)
 
 # Shared in-memory state (written by scheduler thread, read by web thread)
 _state_lock = threading.Lock()
+_scheduler_instance = None  # Set in start_scheduler; used to refresh next_run
 _state = {
     "last_run": None,  # datetime | None
     "last_stats": None,  # dict | None
     "next_run": None,  # datetime | None
     "running": False,  # bool — True while a run is in progress
     "_running_since": None,  # float | None — time.time() when run started
+    "_running_job": None,  # "archive" | "retention" | None — which job holds the lock
     "run_count": 0,  # int — total number of completed runs
     "log_entries": [],  # list[dict] — recent log entries for the web GUI
     "_log_bytes": 0,  # internal: approximate byte size of log_entries
@@ -87,6 +89,18 @@ class _SchedulerLogHandler(logging.Handler):
             )
 
 
+def _update_next_run() -> None:
+    """Refresh next_run from the archive job's next scheduled time."""
+    global _scheduler_instance
+    sched = _scheduler_instance
+    if sched is None:
+        return
+    job = sched.get_job("archive")
+    if job and job.next_run_time:
+        with _state_lock:
+            _state["next_run"] = job.next_run_time
+
+
 def _apply_log_level(config: dict) -> None:
     """Apply logging level from config (so web UI changes take effect on next run)."""
     level_str = config.get("logging", {}).get("level", "INFO").upper()
@@ -114,11 +128,17 @@ def _archive_job(config: dict) -> None:
     with _state_lock:
         manual_trigger = _state.pop("_manual_trigger", False)
         if _state["running"] and not manual_trigger:
+            running_job = _state.get("_running_job")
             running_since = _state.get("_running_since")
             elapsed = time.time() - running_since if running_since else 0
-            if running_since is not None and elapsed > stale_threshold_seconds:
+            # Only override if stuck job was archive; retention can run for hours
+            if (
+                running_job == "archive"
+                and running_since is not None
+                and elapsed > stale_threshold_seconds
+            ):
                 logger.warning(
-                    "Previous run appears stuck (%.0f min) — clearing lock.",
+                    "Previous archive run appears stuck (%.0f min) — clearing lock.",
                     elapsed / 60,
                 )
                 _append_log(
@@ -127,12 +147,14 @@ def _archive_job(config: dict) -> None:
                 )
                 _state["running"] = False
                 _state["_running_since"] = None
+                _state["_running_job"] = None
             else:
                 logger.warning("Archive run skipped — previous run still in progress.")
                 return
         if not manual_trigger:
             _state["running"] = True
             _state["_running_since"] = time.time()
+            _state["_running_job"] = "archive"
 
     logger.debug("Starting archive job.")
     _append_log("Archive run started.", "INFO")
@@ -168,6 +190,8 @@ def _archive_job(config: dict) -> None:
         if result["error"]:
             logger.error("Archive run failed: %s", result["error"])
             _append_log(f"Archive run failed: {result['error']}", "ERROR")
+            if "exited without result" in str(result["error"]):
+                _rebuild_index_on_worker_crash(config)
         else:
             stats = result["stats"]
             with _state_lock:
@@ -190,7 +214,22 @@ def _archive_job(config: dict) -> None:
         with _state_lock:
             _state["running"] = False
             _state["_running_since"] = None
+            _state["_running_job"] = None
             _state["_archive_cache_dirty"] = True
+        _update_next_run()
+
+
+def _rebuild_index_on_worker_crash(config: dict) -> None:
+    """Rebuild archive index when worker dies before flushing its batch."""
+    from app.archiver import _rebuild_archive_index
+
+    output_dir = (config.get("archive") or {}).get("output_dir")
+    if output_dir:
+        try:
+            _rebuild_archive_index(output_dir, config)
+            logger.info("Rebuilt archive index after worker crash.")
+        except Exception as exc:
+            logger.warning("Failed to rebuild index after worker crash: %s", exc)
 
 
 def _retention_job(config: dict) -> None:
@@ -214,6 +253,15 @@ def _retention_job(config: dict) -> None:
             "Retention job skipped: retention_days and retention_max_gb disabled."
         )
         return
+
+    with _state_lock:
+        if _state["running"]:
+            logger.debug("Retention job skipped — another run in progress.")
+            _append_log("Retention skipped — another run in progress.", "INFO")
+            return
+        _state["running"] = True
+        _state["_running_since"] = time.time()
+        _state["_running_job"] = "retention"
 
     logger.info("Starting retention cleanup job.")
     _append_log("Retention cleanup started.", "INFO")
@@ -247,14 +295,24 @@ def _retention_job(config: dict) -> None:
 
     process.join()
 
-    if result["error"]:
-        logger.error("Retention cleanup failed: %s", result["error"])
-        _append_log(f"Retention cleanup failed: {result['error']}", "ERROR")
-    else:
-        deleted = result.get("stats", {}).get("deleted", 0)
-        _append_log(f"Retention cleanup complete — deleted {deleted} file(s).", "INFO")
-    with _state_lock:
-        _state["_archive_cache_dirty"] = True
+    try:
+        if result["error"]:
+            logger.error("Retention cleanup failed: %s", result["error"])
+            _append_log(f"Retention cleanup failed: {result['error']}", "ERROR")
+            if "exited without result" in str(result["error"]):
+                _rebuild_index_on_worker_crash(config)
+        else:
+            deleted = result.get("stats", {}).get("deleted", 0)
+            _append_log(
+                f"Retention cleanup complete — deleted {deleted} file(s).", "INFO"
+            )
+    finally:
+        with _state_lock:
+            _state["running"] = False
+            _state["_running_since"] = None
+            _state["_running_job"] = None
+            _state["_archive_cache_dirty"] = True
+    _update_next_run()
 
 
 def start_scheduler(config_getter) -> BackgroundScheduler:
@@ -284,7 +342,9 @@ def start_scheduler(config_getter) -> BackgroundScheduler:
         config["schedule"].get("interval_minutes", DEFAULT_INTERVAL_MINUTES),
     )
 
+    global _scheduler_instance
     scheduler = BackgroundScheduler(daemon=True)
+    _scheduler_instance = scheduler
     scheduler.add_job(
         _job_wrapper,
         trigger=IntervalTrigger(minutes=interval_minutes),
@@ -355,6 +415,7 @@ def trigger_run(config: dict) -> bool:
             return False
         _state["running"] = True
         _state["_running_since"] = time.time()
+        _state["_running_job"] = "archive"
         _state["_manual_trigger"] = True
     logger.debug("Manual archive run triggered.")
     threading.Thread(target=_archive_job, args=[config], daemon=True).start()

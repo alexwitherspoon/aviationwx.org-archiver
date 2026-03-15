@@ -1703,52 +1703,6 @@ def _collect_archive_files(
     return result
 
 
-def _oldest_directory_date(output_dir: str) -> datetime | None:
-    """
-    Find the oldest date directory (YYYY/MM/DD) in the archive.
-
-    Walks only the directory structure, no file stats. Used to skip full
-    retention scans when the oldest content is within the retention window.
-    Returns None if empty or no valid date dirs.
-    """
-    oldest: datetime | None = None
-    try:
-        for airport in os.listdir(output_dir):
-            apath = os.path.join(output_dir, airport)
-            if not os.path.isdir(apath) or airport.startswith("."):
-                continue
-            for year in os.listdir(apath):
-                if len(year) != 4 or not year.isdigit():
-                    continue
-                ypath = os.path.join(apath, year)
-                if not os.path.isdir(ypath):
-                    continue
-                for month in os.listdir(ypath):
-                    if len(month) != 2 or not month.isdigit():
-                        continue
-                    mpath = os.path.join(ypath, month)
-                    if not os.path.isdir(mpath):
-                        continue
-                    for day in os.listdir(mpath):
-                        if len(day) != 2 or not day.isdigit():
-                            continue
-                        try:
-                            dt = datetime(
-                                int(year),
-                                int(month),
-                                int(day),
-                                tzinfo=timezone.utc,
-                            )
-                            if oldest is None or dt < oldest:
-                                oldest = dt
-                        except ValueError:
-                            continue
-    except OSError as exc:
-        logger.debug("Retention quick check: %s", exc)
-        return None
-    return oldest
-
-
 def apply_retention(config: dict) -> int:
     """
     Delete archived files based on retention rules.
@@ -1851,9 +1805,8 @@ def apply_retention(config: dict) -> int:
         else:
             # Single rule: use quick checks where possible
             if retention_days > 0:
-                # Do not use _oldest_directory_date quick-check: folder dates are now
-                # airport-local (not UTC), so we cannot reliably interpret YYYY/MM/DD
-                # as a single timezone. Always scan by file mtime for correctness.
+                # Folder dates (YYYY/MM/DD) are airport-local, not UTC; always scan
+                # by file mtime for correctness.
                 logger.debug(
                     "Retention: scanning by age (cutoff %d days, before %s)",
                     retention_days,
