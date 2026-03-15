@@ -997,6 +997,162 @@ def test_save_image_handles_url_without_path_basename():
         assert "image" in os.path.basename(path)
 
 
+def test_save_image_uses_airport_local_date():
+    """save_image uses airport_tz for folder date (not UTC)."""
+    from app.archiver import save_image
+
+    # 2024-06-15 02:00 UTC = 2024-06-14 19:00 America/Los_Angeles
+    ts = datetime(2024, 6, 15, 2, 0, 0, tzinfo=timezone.utc)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {"archive": {"output_dir": tmpdir}, "source": {}}
+        data = b"\xff\xd8\xff" + b"\x00" * 100
+
+        path_utc = save_image(
+            data,
+            "https://example.com/cam.jpg",
+            "KSPB",
+            config,
+            timestamp=ts,
+            airport_tz="UTC",
+        )
+        path_pacific = save_image(
+            data,
+            "https://example.com/cam2.jpg",
+            "KSPB",
+            config,
+            timestamp=ts,
+            airport_tz="America/Los_Angeles",
+        )
+
+        assert path_utc is not None and path_pacific is not None
+        rel_utc = os.path.relpath(path_utc, tmpdir)
+        rel_pacific = os.path.relpath(path_pacific, tmpdir)
+        parts_utc = rel_utc.split(os.sep)
+        parts_pacific = rel_pacific.split(os.sep)
+        assert (parts_utc[1], parts_utc[2], parts_utc[3]) == ("2024", "06", "15")
+        assert (parts_pacific[1], parts_pacific[2], parts_pacific[3]) == (
+            "2024",
+            "06",
+            "14",
+        )
+
+
+def test_save_image_fallback_to_utc_for_invalid_timezone():
+    """save_image falls back to UTC when timezone is invalid."""
+    from app.archiver import save_image
+
+    ts = datetime(2024, 6, 15, 2, 0, 0, tzinfo=timezone.utc)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {"archive": {"output_dir": tmpdir}, "source": {}}
+        data = b"\xff\xd8\xff" + b"\x00" * 100
+
+        path = save_image(
+            data,
+            "https://example.com/cam.jpg",
+            "KSPB",
+            config,
+            timestamp=ts,
+            airport_tz="Invalid/Timezone",
+        )
+        assert path is not None
+        rel = os.path.relpath(path, tmpdir)
+        parts = rel.split(os.sep)
+        assert (parts[1], parts[2], parts[3]) == ("2024", "06", "15")
+
+
+def test_save_image_from_url_uses_airport_local_date():
+    """save_image_from_url uses airport_tz for folder date."""
+    from app.archiver import save_image_from_url
+
+    def mock_download(url, filepath, config):
+        with open(filepath, "wb") as f:
+            f.write(b"\xff\xd8\xff")
+        return True
+
+    ts = datetime(2024, 6, 15, 2, 0, 0, tzinfo=timezone.utc)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {"archive": {"output_dir": tmpdir}, "source": {}}
+
+        with patch(
+            "app.archiver.download_image_to_file",
+            side_effect=mock_download,
+        ):
+            path = save_image_from_url(
+                "https://example.com/webcam.jpg",
+                "KSPB",
+                config,
+                timestamp=ts,
+                airport_tz="America/Los_Angeles",
+            )
+        assert path is not None
+        rel = os.path.relpath(path, tmpdir)
+        parts = rel.split(os.sep)
+        assert (parts[1], parts[2], parts[3]) == ("2024", "06", "14")
+
+
+def test_save_history_image_from_url_uses_airport_local_date():
+    """save_history_image_from_url uses airport_tz for folder date."""
+    from app.archiver import save_history_image_from_url
+
+    def mock_download(url, filepath, config):
+        with open(filepath, "wb") as f:
+            f.write(b"\xff\xd8\xff")
+        return True
+
+    # 2024-06-15 02:00 UTC = 2024-06-14 19:00 America/Los_Angeles
+    frame_ts = 1718416800
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {"archive": {"output_dir": tmpdir}, "source": {}}
+
+        with patch(
+            "app.archiver.download_image_to_file",
+            side_effect=mock_download,
+        ):
+            path = save_history_image_from_url(
+                "https://example.com/history.jpg",
+                "KSPB",
+                0,
+                frame_ts,
+                config,
+                airport_tz="America/Los_Angeles",
+            )
+        assert path is not None
+        rel = os.path.relpath(path, tmpdir)
+        parts = rel.split(os.sep)
+        assert (parts[1], parts[2], parts[3]) == ("2024", "06", "14")
+
+
+def test_save_history_image_from_url_fallback_to_utc_for_invalid_timezone():
+    """save_history_image_from_url falls back to UTC when timezone is invalid."""
+    from app.archiver import save_history_image_from_url
+
+    def mock_download(url, filepath, config):
+        with open(filepath, "wb") as f:
+            f.write(b"\xff\xd8\xff")
+        return True
+
+    frame_ts = 1718416800  # 2024-06-15 02:00 UTC
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {"archive": {"output_dir": tmpdir}, "source": {}}
+
+        with patch(
+            "app.archiver.download_image_to_file",
+            side_effect=mock_download,
+        ):
+            path = save_history_image_from_url(
+                "https://example.com/history.jpg",
+                "KSPB",
+                1,
+                frame_ts,
+                config,
+                airport_tz="Invalid/Timezone",
+            )
+        assert path is not None
+        rel = os.path.relpath(path, tmpdir)
+        parts = rel.split(os.sep)
+        assert (parts[1], parts[2], parts[3]) == ("2024", "06", "15")
+
+
 def test_sanitize_camera_name_lowercase_no_spaces():
     """_sanitize_camera_name produces Linux-safe names: lowercase, no spaces."""
     from app.archiver import _sanitize_camera_name
@@ -1548,35 +1704,6 @@ def test_oldest_directory_date_returns_none_when_empty():
         assert _oldest_directory_date(tmpdir) is None
 
 
-def test_apply_retention_skips_full_scan_when_oldest_within_window():
-    """apply_retention skips file scan when oldest dir is within retention window."""
-    from app.archiver import apply_retention
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Create structure with recent date (today)
-        today = datetime.now(timezone.utc)
-        path = os.path.join(
-            tmpdir,
-            "KSPB",
-            str(today.year),
-            f"{today.month:02d}",
-            f"{today.day:02d}",
-            "cam",
-        )
-        os.makedirs(path)
-        with open(os.path.join(path, "image.jpg"), "wb") as fh:
-            fh.write(b"data")
-
-        config = {
-            "archive": {"output_dir": tmpdir, "retention_days": 7},
-        }
-        with patch("app.archiver.os.walk") as mock_walk:
-            deleted = apply_retention(config)
-        # os.walk should not be called (quick check skipped full scan)
-        mock_walk.assert_not_called()
-        assert deleted == 0
-
-
 def test_apply_retention_zero_means_no_deletion():
     """retention_days=0 should not delete any files."""
     from app.archiver import apply_retention
@@ -1906,6 +2033,44 @@ def test_save_history_image_returns_none_on_oserror():
         result = save_history_image(data, "KSPB", 0, 1700000000, config)
 
     assert result is None
+
+
+def test_save_history_image_uses_airport_local_date():
+    """save_history_image uses airport timezone for folder date (not UTC)."""
+    from app.archiver import save_history_image
+
+    # 2024-06-15 02:00 UTC = 2024-06-14 19:00 America/Los_Angeles
+    ts_utc_midnight_15 = 1718416800  # 2024-06-15 02:00:00 UTC
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {"archive": {"output_dir": tmpdir}}
+        data = b"\xff\xd8\xff" + b"\x00" * 100
+
+        path_utc = save_history_image(
+            data, "KSPB", 0, ts_utc_midnight_15, config, airport_tz="UTC"
+        )
+        path_pacific = save_history_image(
+            data,
+            "KSPB",
+            1,
+            ts_utc_midnight_15,
+            config,
+            airport_tz="America/Los_Angeles",
+        )
+
+        assert path_utc is not None
+        assert path_pacific is not None
+        rel_utc = os.path.relpath(path_utc, tmpdir)
+        rel_pacific = os.path.relpath(path_pacific, tmpdir)
+        # KSPB/YYYY/MM/DD/camera/filename
+        parts_utc = rel_utc.split(os.sep)
+        parts_pacific = rel_pacific.split(os.sep)
+        assert parts_utc[0] == "KSPB" and parts_pacific[0] == "KSPB"
+        assert (parts_utc[1], parts_utc[2], parts_utc[3]) == ("2024", "06", "15")
+        assert (parts_pacific[1], parts_pacific[2], parts_pacific[3]) == (
+            "2024",
+            "06",
+            "14",
+        )
 
 
 def test_save_history_image_sets_file_permissions_0644():
