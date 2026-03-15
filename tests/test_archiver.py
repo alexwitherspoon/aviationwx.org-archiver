@@ -2149,8 +2149,9 @@ def test_apply_retention_flushes_batch_on_exception_when_own_batch():
 
         data = _load_archive_index(tmpdir)
         assert data is not None
-        assert "old1.jpg" not in data["files"]
-        assert "old2.jpg" in data["files"]
+        # One file deleted and flushed; one raised. Order is filesystem-dependent.
+        assert len(data["files"]) == 1
+        assert set(data["files"]) <= {"old1.jpg", "old2.jpg"}
 
 
 def test_run_archive_finally_does_not_raise_when_flush_fails():
