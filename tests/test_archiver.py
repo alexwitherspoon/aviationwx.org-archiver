@@ -1870,6 +1870,351 @@ def test_save_image_adds_to_index():
         assert any("img.jpg" in rel or "image" in rel for rel in data["files"])
 
 
+# ---------------------------------------------------------------------------
+# Archive index atomic write, batch, lock, and edge-case tests
+# ---------------------------------------------------------------------------
+
+
+def test_save_archive_index_returns_true_on_success():
+    """_save_archive_index returns True and persists index atomically."""
+    from app.archiver import _load_archive_index, _save_archive_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        data = {"version": 1, "files": {"a/b.jpg": {"mtime": 1.0, "size": 100}}}
+        result = _save_archive_index(tmpdir, data)
+        assert result is True
+        loaded = _load_archive_index(tmpdir)
+        assert loaded == data
+        tmp_path = os.path.join(tmpdir, ".archive_index.json.tmp")
+        assert not os.path.exists(tmp_path)
+
+
+def test_save_archive_index_returns_false_when_output_dir_missing():
+    """_save_archive_index returns False when output_dir does not exist."""
+    from app.archiver import _save_archive_index
+
+    data = {"version": 1, "files": {}}
+    result = _save_archive_index("/nonexistent/path/12345", data)
+    assert result is False
+
+
+def test_add_to_archive_index_with_batch_accumulates_without_writing():
+    """_add_to_archive_index with batch accumulates; no immediate index write."""
+    from app.archiver import _add_to_archive_index, _load_archive_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fpath = os.path.join(tmpdir, "KSPB", "img.jpg")
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
+        with open(fpath, "wb") as fh:
+            fh.write(b"x")
+
+        batch = {"adds": {}, "removes": set()}
+        _add_to_archive_index(tmpdir, fpath, 123.0, 1, batch=batch)
+
+        assert "KSPB/img.jpg" in batch["adds"]
+        assert batch["adds"]["KSPB/img.jpg"] == {"mtime": 123.0, "size": 1}
+        assert _load_archive_index(tmpdir) is None
+
+
+def test_remove_from_archive_index_with_batch_accumulates_without_writing():
+    """_remove_from_archive_index with batch accumulates; no immediate write."""
+    from app.archiver import (
+        _add_to_archive_index,
+        _load_archive_index,
+        _remove_from_archive_index,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fpath = os.path.join(tmpdir, "KSPB", "img.jpg")
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
+        with open(fpath, "wb") as fh:
+            fh.write(b"x")
+        _add_to_archive_index(tmpdir, fpath, 123.0, 1)
+
+        batch = {"adds": {}, "removes": set()}
+        _remove_from_archive_index(tmpdir, fpath, batch=batch)
+
+        assert "KSPB/img.jpg" in batch["removes"]
+        data = _load_archive_index(tmpdir)
+        assert data is not None
+        assert "KSPB/img.jpg" in data["files"]
+
+
+def test_add_then_remove_same_path_in_batch_leaves_only_in_removes():
+    """Add then remove same path: batch ends with path only in removes."""
+    from app.archiver import _add_to_archive_index, _remove_from_archive_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fpath = os.path.join(tmpdir, "KSPB", "img.jpg")
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
+        with open(fpath, "wb") as fh:
+            fh.write(b"x")
+
+        batch = {"adds": {}, "removes": set()}
+        _add_to_archive_index(tmpdir, fpath, 123.0, 1, batch=batch)
+        _remove_from_archive_index(tmpdir, fpath, batch=batch)
+
+        assert "KSPB/img.jpg" not in batch["adds"]
+        assert "KSPB/img.jpg" in batch["removes"]
+
+
+def test_remove_then_add_same_path_in_batch_leaves_only_in_adds():
+    """Remove then add same path: batch ends with path only in adds."""
+    from app.archiver import _add_to_archive_index, _remove_from_archive_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fpath = os.path.join(tmpdir, "KSPB", "img.jpg")
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
+        with open(fpath, "wb") as fh:
+            fh.write(b"x")
+
+        batch = {"adds": {}, "removes": set()}
+        _remove_from_archive_index(tmpdir, fpath, batch=batch)
+        _add_to_archive_index(tmpdir, fpath, 456.0, 2, batch=batch)
+
+        assert "KSPB/img.jpg" in batch["adds"]
+        assert batch["adds"]["KSPB/img.jpg"] == {"mtime": 456.0, "size": 2}
+        assert "KSPB/img.jpg" not in batch["removes"]
+
+
+def test_add_to_archive_index_with_malformed_batch_returns_early():
+    """_add_to_archive_index with malformed batch does not raise or modify."""
+    from app.archiver import _add_to_archive_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fpath = os.path.join(tmpdir, "img.jpg")
+        with open(fpath, "wb") as fh:
+            fh.write(b"x")
+
+        for bad_batch in ({"adds": [], "removes": set()}, {"removes": set()}):
+            _add_to_archive_index(tmpdir, fpath, 1.0, 1, batch=bad_batch)
+        _add_to_archive_index(tmpdir, fpath, 1.0, 1, batch={"adds": {}, "removes": []})
+
+
+def test_remove_from_archive_index_with_malformed_batch_returns_early():
+    """_remove_from_archive_index with malformed batch does not raise."""
+    from app.archiver import _remove_from_archive_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fpath = os.path.join(tmpdir, "img.jpg")
+        with open(fpath, "wb") as fh:
+            fh.write(b"x")
+
+        for bad_batch in ({"adds": {}, "removes": []}, {}):
+            _remove_from_archive_index(tmpdir, fpath, batch=bad_batch)
+
+
+def test_add_to_archive_index_rejects_path_traversal():
+    """_add_to_archive_index ignores paths with .. or absolute."""
+    from app.archiver import _add_to_archive_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        batch = {"adds": {}, "removes": set()}
+        _add_to_archive_index(tmpdir, "/etc/passwd", 1.0, 1, batch=batch)
+        bad_path = os.path.join(tmpdir, "..", "etc", "x")
+        _add_to_archive_index(tmpdir, bad_path, 1.0, 1, batch=batch)
+        assert len(batch["adds"]) == 0
+
+
+def test_flush_archive_index_batch_applies_adds_and_removes():
+    """_flush_archive_index_batch merges batch into index and saves."""
+    from app.archiver import (
+        _flush_archive_index_batch,
+        _load_archive_index,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        batch = {
+            "adds": {"KSPB/a.jpg": {"mtime": 1.0, "size": 10}},
+            "removes": set(),
+        }
+        _flush_archive_index_batch(tmpdir, batch)
+        data = _load_archive_index(tmpdir)
+        assert data is not None
+        assert "KSPB/a.jpg" in data["files"]
+
+        batch2 = {
+            "adds": {"KAWO/b.jpg": {"mtime": 2.0, "size": 20}},
+            "removes": {"KSPB/a.jpg"},
+        }
+        _flush_archive_index_batch(tmpdir, batch2)
+        data = _load_archive_index(tmpdir)
+        assert "KSPB/a.jpg" not in data["files"]
+        assert "KAWO/b.jpg" in data["files"]
+
+
+def test_flush_archive_index_batch_empty_batch_is_noop():
+    """_flush_archive_index_batch with empty batch does nothing."""
+    from app.archiver import _flush_archive_index_batch, _load_archive_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _flush_archive_index_batch(tmpdir, {"adds": {}, "removes": set()})
+        assert _load_archive_index(tmpdir) is None
+
+
+def test_flush_archive_index_batch_malformed_batch_is_noop():
+    """_flush_archive_index_batch with wrong types uses empty adds/removes."""
+    from app.archiver import _flush_archive_index_batch, _load_archive_index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _flush_archive_index_batch(tmpdir, {"adds": [], "removes": []})
+        assert _load_archive_index(tmpdir) is None
+
+
+def test_flush_archive_index_batch_logs_warning_when_save_fails(caplog):
+    """_flush_archive_index_batch logs warning when _save_archive_index fails."""
+    from app.archiver import _flush_archive_index_batch
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        batch = {"adds": {"a.jpg": {"mtime": 1.0, "size": 1}}, "removes": set()}
+        with patch("app.archiver._save_archive_index", return_value=False):
+            _flush_archive_index_batch(tmpdir, batch)
+    assert "stale" in caplog.text.lower() or "fail" in caplog.text.lower()
+
+
+def test_run_archive_flushes_batch_in_finally():
+    """run_archive flushes non-empty batch in finally block."""
+    from app.archiver import _load_archive_index, run_archive
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {
+            "source": {
+                "airports_api_url": "https://example.com/airports",
+                "base_url": "https://example.com",
+                "request_timeout": 5,
+            },
+            "archive": {"output_dir": tmpdir},
+            "airports": {"archive_all": False, "selected": ["KSPB"]},
+            "schedule": {"job_timeout_minutes": 0},
+        }
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.json.return_value = [{"code": "KSPB", "id": "kspb"}]
+        mock_resp.headers = {}
+
+        with patch("app.archiver.requests.Session") as mock_session:
+            mock_session.return_value.get.return_value = mock_resp
+            mock_session.return_value.__enter__ = lambda s: s
+            mock_session.return_value.__exit__ = lambda *a: None
+            fetch_patch = patch(
+                "app.archiver.fetch_airport_list", return_value=[{"code": "KSPB"}]
+            )
+            with fetch_patch:
+                with patch(
+                    "app.archiver._run_archive_impl",
+                    side_effect=lambda c, s, d, t: (
+                        c["_archive_index_batch"]["adds"].__setitem__(
+                            "KSPB/2024/01/01/img.jpg", {"mtime": 1.0, "size": 1}
+                        )
+                        or s.__setitem__("airports_processed", 1)
+                        or s
+                    ),
+                ):
+                    run_archive(config)
+
+        data = _load_archive_index(tmpdir)
+        assert data is not None
+        assert "KSPB/2024/01/01/img.jpg" in data["files"]
+
+
+def test_apply_retention_flushes_batch_on_exception_when_own_batch():
+    """apply_retention flushes batch in finally when exception occurs mid-loop."""
+    import time
+
+    from app.archiver import _load_archive_index, apply_retention
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        old_mtime = time.time() - (2 * 86400 + 1)
+        for name in ("old1.jpg", "old2.jpg"):
+            fpath = os.path.join(tmpdir, name)
+            with open(fpath, "wb") as fh:
+                fh.write(b"x" * 1024)
+            os.utime(fpath, (old_mtime, old_mtime))
+
+        config = {"archive": {"output_dir": tmpdir, "retention_days": 1}}
+        real_remove = os.remove
+        call_count = [0]
+
+        def fake_remove(p):
+            call_count[0] += 1
+            if call_count[0] >= 2:
+                raise KeyboardInterrupt
+            real_remove(p)
+
+        with patch("app.archiver.os.remove", fake_remove):
+            try:
+                apply_retention(config)
+            except KeyboardInterrupt:
+                pass
+
+        data = _load_archive_index(tmpdir)
+        assert data is not None
+        assert "old1.jpg" not in data["files"]
+        assert "old2.jpg" in data["files"]
+
+
+def test_run_archive_finally_does_not_raise_when_flush_fails():
+    """run_archive finally catches flush exception and logs; does not propagate."""
+    from app.archiver import run_archive
+
+    config = {
+        "source": {
+            "airports_api_url": "https://example.com/airports",
+            "base_url": "https://example.com",
+            "request_timeout": 5,
+        },
+        "archive": {"output_dir": "/tmp/aviationwx-test"},
+        "airports": {"archive_all": False, "selected": []},
+        "schedule": {"job_timeout_minutes": 0},
+    }
+
+    def add_to_batch_and_return(c, s, d, t):
+        c["_archive_index_batch"]["adds"]["x.jpg"] = {"mtime": 1.0, "size": 1}
+        return {"errors": 0}
+
+    impl_patch = patch(
+        "app.archiver._run_archive_impl", side_effect=add_to_batch_and_return
+    )
+    with patch("app.archiver.fetch_airport_list", return_value=[]):
+        with impl_patch:
+            with patch(
+                "app.archiver._flush_archive_index_batch",
+                side_effect=OSError("disk full"),
+            ):
+                stats = run_archive(config)
+    assert stats["errors"] == 0
+
+
+def test_with_index_lock_yields_inside_context():
+    """_with_index_lock context manager yields; body runs under lock."""
+    from app.archiver import _with_index_lock
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ran = []
+
+        with _with_index_lock(tmpdir):
+            ran.append(1)
+
+        assert ran == [1]
+
+
+def test_with_index_lock_falls_back_to_soft_lock_when_filelock_fails():
+    """_with_index_lock falls back to SoftFileLock when FileLock acquire fails."""
+    from app.archiver import _with_index_lock
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with patch("filelock.FileLock") as mock_filelock:
+            mock_filelock.return_value.acquire.side_effect = OSError("NFS")
+            with patch("filelock.SoftFileLock") as mock_soft:
+                mock_soft.return_value.__enter__ = lambda s: s
+                mock_soft.return_value.__exit__ = lambda *a: None
+                ran = []
+                with _with_index_lock(tmpdir):
+                    ran.append(1)
+                assert ran == [1]
+                mock_soft.assert_called_once()
+
+
 def test_apply_retention_removes_from_index():
     """apply_retention removes deleted files from the archive index."""
     import time

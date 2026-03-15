@@ -8,6 +8,7 @@ Fetches webcam images from AviationWX.org and organises them on disk as:
 from __future__ import annotations
 
 import base64
+import contextlib
 import errno
 import hashlib
 import json
@@ -36,12 +37,45 @@ logger = logging.getLogger(__name__)
 # Exclude metadata.json from retention/stats scans (updated each run, not versioned)
 _METADATA_JSON = "metadata.json"
 _ARCHIVE_INDEX_FILENAME = ".archive_index.json"
+_ARCHIVE_INDEX_LOCK = ".archive_index.lock"
 _ARCHIVE_INDEX_VERSION = 1
 
 
 def _archive_index_path(output_dir: str) -> str:
     """Path to the file-based archive index."""
     return os.path.join(output_dir, _ARCHIVE_INDEX_FILENAME)
+
+
+def _archive_index_lock_path(output_dir: str) -> str:
+    """Path to the index lock file."""
+    return os.path.join(output_dir, _ARCHIVE_INDEX_LOCK)
+
+
+@contextlib.contextmanager
+def _with_index_lock(output_dir: str):
+    """
+    Context manager: hold exclusive lock on index during read-modify-write.
+
+    Uses filelock: FileLock (fcntl on Unix, msvcrt on Windows) with fallback to
+    SoftFileLock when OS-level locking fails (e.g. NFS). SoftFileLock works on
+    any filesystem including network mounts.
+    """
+    from filelock import FileLock, SoftFileLock, Timeout
+
+    lock_path = _archive_index_lock_path(output_dir)
+    lock = FileLock(lock_path)
+    try:
+        lock.acquire()
+    except (Timeout, OSError) as exc:
+        logger.debug("Index lock failed (%s), trying soft lock: %s", lock_path, exc)
+        soft_lock = SoftFileLock(lock_path)
+        with soft_lock:
+            yield
+        return
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _load_archive_index(output_dir: str) -> dict | None:
@@ -65,46 +99,104 @@ def _load_archive_index(output_dir: str) -> dict | None:
 
 
 def _save_archive_index(output_dir: str, data: dict) -> bool:
-    """Save the archive index. Returns True on success."""
+    """Save the archive index atomically (write to temp, then replace)."""
     path = _archive_index_path(output_dir)
+    tmp_path = path + ".tmp"
     try:
-        with open(path, "w", encoding="utf-8") as fh:
+        with open(tmp_path, "w", encoding="utf-8") as fh:
             json.dump(data, fh, separators=(",", ":"))
+        os.replace(tmp_path, path)
         return True
     except OSError as exc:
         logger.debug("Archive index save failed (%s): %s", path, exc)
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
         return False
 
 
 def _add_to_archive_index(
-    output_dir: str, full_path: str, mtime: float, size: int
+    output_dir: str,
+    full_path: str,
+    mtime: float,
+    size: int,
+    batch: dict | None = None,
 ) -> None:
-    """Add or update a file entry in the archive index."""
+    """Add/update file in archive index. If batch given, accumulate only."""
     try:
         rel = os.path.relpath(full_path, output_dir)
         if rel.startswith("..") or os.path.isabs(rel):
             return
     except ValueError:
         return
-    data = _load_archive_index(output_dir) or {
-        "version": _ARCHIVE_INDEX_VERSION,
-        "files": {},
-    }
-    data["files"][rel] = {"mtime": mtime, "size": size}
-    _save_archive_index(output_dir, data)
+    if batch is not None:
+        if not isinstance(batch.get("adds"), dict):
+            return
+        if not isinstance(batch.get("removes"), set):
+            return
+        batch["removes"].discard(rel)
+        batch["adds"][rel] = {"mtime": mtime, "size": size}
+        return
+    with _with_index_lock(output_dir):
+        data = _load_archive_index(output_dir) or {
+            "version": _ARCHIVE_INDEX_VERSION,
+            "files": {},
+        }
+        data["files"][rel] = {"mtime": mtime, "size": size}
+        _save_archive_index(output_dir, data)
 
 
-def _remove_from_archive_index(output_dir: str, full_path: str) -> None:
-    """Remove a file entry from the archive index."""
+def _remove_from_archive_index(
+    output_dir: str, full_path: str, batch: dict | None = None
+) -> None:
+    """Remove a file entry from the archive index. If batch given, accumulate only."""
     try:
         rel = os.path.relpath(full_path, output_dir)
     except ValueError:
         return
-    data = _load_archive_index(output_dir)
-    if not data or rel not in data.get("files", {}):
+    if batch is not None:
+        if not isinstance(batch.get("adds"), dict):
+            return
+        if not isinstance(batch.get("removes"), set):
+            return
+        batch["adds"].pop(rel, None)
+        batch["removes"].add(rel)
         return
-    del data["files"][rel]
-    _save_archive_index(output_dir, data)
+    with _with_index_lock(output_dir):
+        data = _load_archive_index(output_dir)
+        if not data or rel not in data.get("files", {}):
+            return
+        del data["files"][rel]
+        _save_archive_index(output_dir, data)
+
+
+def _flush_archive_index_batch(output_dir: str, batch: dict) -> None:
+    """Apply batched adds/removes to index and save. Caller ensures batch non-empty."""
+    adds = batch.get("adds") if isinstance(batch.get("adds"), dict) else {}
+    removes = batch.get("removes") if isinstance(batch.get("removes"), set) else set()
+    if not adds and not removes:
+        return
+    with _with_index_lock(output_dir):
+        data = _load_archive_index(output_dir) or {
+            "version": _ARCHIVE_INDEX_VERSION,
+            "files": {},
+        }
+        for rel in removes:
+            data["files"].pop(rel, None)
+        for rel, meta in adds.items():
+            data["files"][rel] = meta
+        if not _save_archive_index(output_dir, data):
+            logger.warning(
+                "Archive index batch flush failed (output_dir=%s); index may be stale.",
+                output_dir,
+            )
+        else:
+            logger.debug(
+                "Flushed index batch: %d adds, %d removes",
+                len(adds),
+                len(removes),
+            )
 
 
 def _rel_path_safe(output_dir: str, rel: str) -> bool:
@@ -172,9 +264,10 @@ def _rebuild_archive_index(
             except ValueError:
                 continue
     data = {"version": _ARCHIVE_INDEX_VERSION, "files": files}
-    if _save_archive_index(output_dir, data):
-        logger.debug("Rebuilt archive index (%d files)", len(files))
-        return data
+    with _with_index_lock(output_dir):
+        if _save_archive_index(output_dir, data):
+            logger.debug("Rebuilt archive index (%d files)", len(files))
+            return data
     return None
 
 
@@ -1309,7 +1402,13 @@ def save_history_image_from_url(
         os.chmod(filepath, 0o644)
         os.utime(filepath, (frame_ts, frame_ts))
         st = os.stat(filepath)
-        _add_to_archive_index(output_dir, filepath, float(frame_ts), st.st_size)
+        _add_to_archive_index(
+            output_dir,
+            filepath,
+            float(frame_ts),
+            st.st_size,
+            batch=config.get("_archive_index_batch"),
+        )
         logger.info(
             "Archived history frame %s cam %s @ %s -> %s",
             airport_code,
@@ -1368,7 +1467,13 @@ def save_history_image(
             logger.debug("Skipping duplicate history frame %s", filepath)
             try:
                 st = os.stat(filepath)
-                _add_to_archive_index(output_dir, filepath, st.st_mtime, st.st_size)
+                _add_to_archive_index(
+                    output_dir,
+                    filepath,
+                    st.st_mtime,
+                    st.st_size,
+                    batch=config.get("_archive_index_batch"),
+                )
             except OSError:
                 pass
             return filepath
@@ -1378,7 +1483,13 @@ def save_history_image(
             fh.write(image_data)
         os.chmod(filepath, 0o644)
         os.utime(filepath, (frame_ts, frame_ts))
-        _add_to_archive_index(output_dir, filepath, float(frame_ts), len(image_data))
+        _add_to_archive_index(
+            output_dir,
+            filepath,
+            float(frame_ts),
+            len(image_data),
+            batch=config.get("_archive_index_batch"),
+        )
         logger.info(
             "Archived history frame %s cam %s @ %s -> %s",
             airport_code,
@@ -1440,7 +1551,13 @@ def save_image_from_url(
         ts = timestamp.timestamp()
         os.utime(filepath, (ts, ts))
         st = os.stat(filepath)
-        _add_to_archive_index(output_dir, filepath, ts, st.st_size)
+        _add_to_archive_index(
+            output_dir,
+            filepath,
+            ts,
+            st.st_size,
+            batch=config.get("_archive_index_batch"),
+        )
         logger.info("Archived %s -> %s", url, filepath)
         return filepath
     except OSError as exc:
@@ -1505,7 +1622,13 @@ def save_image(
             logger.debug("Skipping duplicate image %s", filepath)
             try:
                 st = os.stat(filepath)
-                _add_to_archive_index(output_dir, filepath, st.st_mtime, st.st_size)
+                _add_to_archive_index(
+                    output_dir,
+                    filepath,
+                    st.st_mtime,
+                    st.st_size,
+                    batch=config.get("_archive_index_batch"),
+                )
             except OSError:
                 pass
             return filepath
@@ -1516,7 +1639,13 @@ def save_image(
         os.chmod(filepath, 0o644)
         ts = timestamp.timestamp()
         os.utime(filepath, (ts, ts))
-        _add_to_archive_index(output_dir, filepath, ts, len(image_data))
+        _add_to_archive_index(
+            output_dir,
+            filepath,
+            ts,
+            len(image_data),
+            batch=config.get("_archive_index_batch"),
+        )
         logger.info("Archived %s -> %s", url, filepath)
         return filepath
     except OSError as exc:
@@ -1635,6 +1764,15 @@ def apply_retention(config: dict) -> int:
 
     Returns the number of files deleted.
     """
+    output_dir = config["archive"]["output_dir"]
+    batch = config.get("_archive_index_batch")
+    if batch is None:
+        batch = {"adds": {}, "removes": set()}
+        config["_archive_index_batch"] = batch
+        own_batch = True
+    else:
+        own_batch = False
+
     retention_days = config["archive"].get("retention_days", 0)
     retention_max_gb = config["archive"].get("retention_max_gb", 0)
     if isinstance(retention_max_gb, str):
@@ -1654,7 +1792,6 @@ def apply_retention(config: dict) -> int:
         )
         return 0
 
-    output_dir = config["archive"]["output_dir"]
     if not os.path.isdir(output_dir):
         logger.warning(
             "Retention: output_dir %s does not exist; nothing to clean. "
@@ -1671,95 +1808,107 @@ def apply_retention(config: dict) -> int:
     )
     cutoff_ts = cutoff_dt.timestamp() if cutoff_dt else 0
 
-    # When both rules enabled: single walk, apply age then size
-    if retention_days > 0 and retention_max_bytes > 0:
-        files_list = _collect_archive_files(output_dir, config)
-        remaining: list[tuple[str, float, int]] = []
-        for fpath, mtime, size in files_list:
-            if mtime < cutoff_ts:
-                try:
-                    os.remove(fpath)
-                    _remove_from_archive_index(output_dir, fpath)
-                    deleted += 1
-                except OSError as exc:
-                    if exc.errno == errno.ENOENT:
-                        _remove_from_archive_index(output_dir, fpath)
-                    logger.warning("Retention: failed to remove %s: %s", fpath, exc)
-            else:
-                remaining.append((fpath, mtime, size))
-        total_bytes = sum(s for _, _, s in remaining)
-        if total_bytes > retention_max_bytes:
-            remaining.sort(key=lambda x: x[1])
-            to_remove = total_bytes - retention_max_bytes
-            removed_bytes = 0
-            for i, (fpath, _mtime, size) in enumerate(remaining):
-                if removed_bytes >= to_remove:
-                    break
-                try:
-                    os.remove(fpath)
-                    _remove_from_archive_index(output_dir, fpath)
-                    deleted += 1
-                    removed_bytes += size
-                except OSError as exc:
-                    if exc.errno == errno.ENOENT:
-                        _remove_from_archive_index(output_dir, fpath)
-                    logger.warning("Retention: failed to remove %s: %s", fpath, exc)
-                if i > 0 and i % 50 == 0:
-                    _yield_for_web(config)
-    else:
-        # Single rule: use quick checks where possible
-        if retention_days > 0:
-            # Do not use _oldest_directory_date quick-check: folder dates are now
-            # airport-local (not UTC), so we cannot reliably interpret YYYY/MM/DD
-            # as a single timezone. Always scan by file mtime for correctness.
-            logger.debug(
-                "Retention: scanning by age (cutoff %d days, before %s)",
-                retention_days,
-                cutoff_dt.isoformat(),
-            )
-            for fpath, mtime, _size in _collect_archive_files(output_dir, config):
+    try:
+        # When both rules enabled: single walk, apply age then size
+        if retention_days > 0 and retention_max_bytes > 0:
+            files_list = _collect_archive_files(output_dir, config)
+            remaining: list[tuple[str, float, int]] = []
+            for fpath, mtime, size in files_list:
                 if mtime < cutoff_ts:
                     try:
                         os.remove(fpath)
-                        _remove_from_archive_index(output_dir, fpath)
+                        _remove_from_archive_index(output_dir, fpath, batch=batch)
                         deleted += 1
                     except OSError as exc:
                         if exc.errno == errno.ENOENT:
-                            _remove_from_archive_index(output_dir, fpath)
+                            _remove_from_archive_index(output_dir, fpath, batch=batch)
                         logger.warning("Retention: failed to remove %s: %s", fpath, exc)
-
-        if retention_max_bytes > 0:
-            files_sorted = _collect_archive_files(output_dir, config)
-            total_bytes = sum(s for _, _, s in files_sorted)
-            if total_bytes <= retention_max_bytes:
-                logger.debug(
-                    "Retention: total %.1f GB under %.1f GB limit; no deletion needed.",
-                    total_bytes / BYTES_PER_GIB,
-                    retention_max_bytes / BYTES_PER_GIB,
-                )
-            else:
-                files_sorted.sort(key=lambda x: x[1])
+                else:
+                    remaining.append((fpath, mtime, size))
+            total_bytes = sum(s for _, _, s in remaining)
+            if total_bytes > retention_max_bytes:
+                remaining.sort(key=lambda x: x[1])
                 to_remove = total_bytes - retention_max_bytes
-                logger.debug(
-                    "Retention: total %.1f GB exceeds max %.1f GB; removing oldest",
-                    total_bytes / BYTES_PER_GIB,
-                    retention_max_bytes / BYTES_PER_GIB,
-                )
                 removed_bytes = 0
-                for i, (fpath, _mtime, size) in enumerate(files_sorted):
+                for i, (fpath, _mtime, size) in enumerate(remaining):
                     if removed_bytes >= to_remove:
                         break
                     try:
                         os.remove(fpath)
-                        _remove_from_archive_index(output_dir, fpath)
+                        _remove_from_archive_index(output_dir, fpath, batch=batch)
                         deleted += 1
                         removed_bytes += size
                     except OSError as exc:
                         if exc.errno == errno.ENOENT:
-                            _remove_from_archive_index(output_dir, fpath)
+                            _remove_from_archive_index(output_dir, fpath, batch=batch)
                         logger.warning("Retention: failed to remove %s: %s", fpath, exc)
                     if i > 0 and i % 50 == 0:
                         _yield_for_web(config)
+        else:
+            # Single rule: use quick checks where possible
+            if retention_days > 0:
+                # Do not use _oldest_directory_date quick-check: folder dates are now
+                # airport-local (not UTC), so we cannot reliably interpret YYYY/MM/DD
+                # as a single timezone. Always scan by file mtime for correctness.
+                logger.debug(
+                    "Retention: scanning by age (cutoff %d days, before %s)",
+                    retention_days,
+                    cutoff_dt.isoformat(),
+                )
+                for fpath, mtime, _size in _collect_archive_files(output_dir, config):
+                    if mtime < cutoff_ts:
+                        try:
+                            os.remove(fpath)
+                            _remove_from_archive_index(output_dir, fpath, batch=batch)
+                            deleted += 1
+                        except OSError as exc:
+                            if exc.errno == errno.ENOENT:
+                                _remove_from_archive_index(
+                                    output_dir, fpath, batch=batch
+                                )
+                            logger.warning(
+                                "Retention: failed to remove %s: %s", fpath, exc
+                            )
+
+            if retention_max_bytes > 0:
+                files_sorted = _collect_archive_files(output_dir, config)
+                total_bytes = sum(s for _, _, s in files_sorted)
+                if total_bytes <= retention_max_bytes:
+                    logger.debug(
+                        "Retention: total %.1f GB under %.1f GB limit; no deletion.",
+                        total_bytes / BYTES_PER_GIB,
+                        retention_max_bytes / BYTES_PER_GIB,
+                    )
+                else:
+                    files_sorted.sort(key=lambda x: x[1])
+                    to_remove = total_bytes - retention_max_bytes
+                    logger.debug(
+                        "Retention: total %.1f GB exceeds max %.1f GB; removing oldest",
+                        total_bytes / BYTES_PER_GIB,
+                        retention_max_bytes / BYTES_PER_GIB,
+                    )
+                    removed_bytes = 0
+                    for i, (fpath, _mtime, size) in enumerate(files_sorted):
+                        if removed_bytes >= to_remove:
+                            break
+                        try:
+                            os.remove(fpath)
+                            _remove_from_archive_index(output_dir, fpath, batch=batch)
+                            deleted += 1
+                            removed_bytes += size
+                        except OSError as exc:
+                            if exc.errno == errno.ENOENT:
+                                _remove_from_archive_index(
+                                    output_dir, fpath, batch=batch
+                                )
+                            logger.warning(
+                                "Retention: failed to remove %s: %s", fpath, exc
+                            )
+                        if i > 0 and i % 50 == 0:
+                            _yield_for_web(config)
+    finally:
+        if own_batch and (batch["adds"] or batch["removes"]):
+            _flush_archive_index_batch(output_dir, batch)
 
     if deleted:
         reasons = []
@@ -2057,6 +2206,7 @@ def run_archive(
 
     # Reuse HTTP connections across requests (avoids per-request setup overhead)
     config["source"]["_session"] = requests.Session()
+    config["_archive_index_batch"] = {"adds": {}, "removes": set()}
     try:
         return _run_archive_impl(config, stats, deadline, run_ts)
     finally:
@@ -2065,6 +2215,16 @@ def run_archive(
         except Exception:
             pass
         config["source"].pop("_session", None)
+        batch = config.get("_archive_index_batch")
+        output_dir = (config.get("archive") or {}).get("output_dir")
+        if batch and output_dir and (batch.get("adds") or batch.get("removes")):
+            try:
+                _flush_archive_index_batch(output_dir, batch)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to flush archive index batch on run exit: %s", exc
+                )
+        config.pop("_archive_index_batch", None)
 
 
 def _run_archive_impl(

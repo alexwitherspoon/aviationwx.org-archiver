@@ -49,7 +49,7 @@ aviationwx.org-archiver/
 └── Dockerfile
 ```
 
-**Archive index**: `output_dir/.archive_index.json` — file-based index for fast stats/retention. Uses scandir fallback when missing/stale; auto-rebuilds.
+**Archive index**: `output_dir/.archive_index.json` — file-based index for fast stats/retention. Atomic writes, inter-process locking (filelock: fcntl/msvcrt with SoftFileLock fallback for NFS), batched updates per run. Uses scandir fallback when missing/stale; auto-rebuilds.
 
 ---
 
