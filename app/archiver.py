@@ -92,7 +92,8 @@ def _utc_ts_to_local_ymd(utc_ts: int | float, tz_name: str) -> tuple[str, str, s
     """
     try:
         tz = ZoneInfo(tz_name)
-    except Exception:
+    except Exception as exc:
+        logger.debug("Timezone %r invalid or unavailable, using UTC: %s", tz_name, exc)
         tz = timezone.utc
     dt_utc = datetime.fromtimestamp(utc_ts, tz=timezone.utc)
     dt_local = dt_utc.astimezone(tz)
@@ -109,7 +110,8 @@ def _utc_dt_to_local_ymd(dt: datetime, tz_name: str) -> tuple[str, str, str]:
     """
     try:
         tz = ZoneInfo(tz_name)
-    except Exception:
+    except Exception as exc:
+        logger.debug("Timezone %r invalid or unavailable, using UTC: %s", tz_name, exc)
         tz = timezone.utc
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)

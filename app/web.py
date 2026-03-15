@@ -331,7 +331,11 @@ def configuration():
             if save_config(new_config):
                 app.config["ARCHIVER_CONFIG"] = new_config
                 config = new_config
-                message = "Configuration saved successfully."
+                message = (
+                    "Configuration saved successfully. Note: changes to scheduling "
+                    "settings (such as interval minutes) will not take effect until "
+                    "the application is restarted."
+                )
             else:
                 error = "Failed to save configuration. Check server logs."
         except ValueError as exc:

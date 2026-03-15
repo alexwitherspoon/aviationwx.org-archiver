@@ -18,6 +18,15 @@ from app.scheduler import start_scheduler
 from app.web import app
 
 
+class UTCFormatter(logging.Formatter):
+    """Formatter that emits timestamps in UTC (ISO 8601 with Z suffix)."""
+
+    def formatTime(self, record, datefmt=None):  # noqa: N802
+        return time.strftime(
+            datefmt or "%Y-%m-%dT%H:%M:%SZ", time.gmtime(record.created)
+        )
+
+
 def setup_logging(config: dict) -> None:
     level_str = config.get("logging", {}).get("level", "INFO").upper()
     level = getattr(logging, level_str, logging.INFO)
@@ -38,12 +47,14 @@ def setup_logging(config: dict) -> None:
                 exc,
             )
 
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%SZ",
-        handlers=handlers,
-    )
+    for h in handlers:
+        h.setFormatter(
+            UTCFormatter(
+                fmt="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+                datefmt="%Y-%m-%dT%H:%M:%SZ",
+            )
+        )
+    logging.basicConfig(level=level, handlers=handlers)
 
 
 def main() -> None:
