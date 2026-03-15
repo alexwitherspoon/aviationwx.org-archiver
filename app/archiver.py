@@ -107,6 +107,18 @@ def _remove_from_archive_index(output_dir: str, full_path: str) -> None:
     _save_archive_index(output_dir, data)
 
 
+def _rel_path_safe(output_dir: str, rel: str) -> bool:
+    """Return True if rel stays under output_dir (no path traversal)."""
+    if rel.startswith("..") or os.path.isabs(rel):
+        return False
+    try:
+        full = os.path.normpath(os.path.join(output_dir, rel))
+        base = os.path.normpath(output_dir)
+        return full == base or full.startswith(base + os.sep)
+    except (ValueError, OSError):
+        return False
+
+
 def _index_entries_valid(output_dir: str, data: dict, sample_size: int = 10) -> bool:
     """
     Spot-check a sample of index entries. Returns False if any are missing on disk.
@@ -1520,9 +1532,21 @@ def _collect_archive_files(
     if data and data.get("files") and _index_entries_valid(output_dir, data):
         result: list[tuple[str, float, int]] = []
         for rel, meta in data["files"].items():
+            if not _rel_path_safe(output_dir, rel):
+                logger.debug("Index: rejecting unsafe path %s; triggering rebuild", rel)
+                break
+            if not isinstance(meta, dict):
+                logger.debug("Index: invalid entry for %s; triggering rebuild", rel)
+                break
+            mtime = meta.get("mtime")
+            size = meta.get("size")
+            if not isinstance(mtime, (int, float)) or not isinstance(size, int):
+                logger.debug("Index: invalid mtime/size for %s; rebuild", rel)
+                break
             full = os.path.join(output_dir, rel)
-            result.append((full, meta["mtime"], meta["size"]))
-        return result
+            result.append((full, float(mtime), size))
+        else:
+            return result
     # Fallback: full scan and rebuild index
     result = []
     for fpath, st in _scandir_walk_files(output_dir, config=config):

@@ -292,7 +292,7 @@ def _archive_stats_uncached(output_dir: str, config: dict | None = None) -> dict
         }
 
     data = _load_archive_index(output_dir)
-    if data and _index_entries_valid(output_dir, data):
+    if data and data.get("files") and _index_entries_valid(output_dir, data):
         files = data.get("files", {})
         for rel_path, entry in files.items():
             total_files += 1

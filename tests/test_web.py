@@ -277,7 +277,7 @@ def test_archive_stats_uses_index_when_present():
     assert set(stats["airports"]) == {"KSPB", "KAWO"}
 
 
-def test_archive_stats_handles_getsize_oserror():
+def test_archive_stats_returns_zero_when_scan_yields_no_files():
     """_archive_stats returns zeros when scandir fallback yields no files."""
     with tempfile.TemporaryDirectory() as tmpdir:
         path = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "north_runway")
