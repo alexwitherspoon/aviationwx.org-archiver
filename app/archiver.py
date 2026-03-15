@@ -8,10 +8,12 @@ Fetches webcam images from AviationWX.org and organises them on disk as:
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import json
 import logging
 import os
+import random
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -103,6 +105,25 @@ def _remove_from_archive_index(output_dir: str, full_path: str) -> None:
         return
     del data["files"][rel]
     _save_archive_index(output_dir, data)
+
+
+def _index_entries_valid(output_dir: str, data: dict, sample_size: int = 10) -> bool:
+    """
+    Spot-check a sample of index entries. Returns False if any are missing on disk.
+
+    Used to detect index staleness (e.g. manual file deletion) and trigger rebuild.
+    """
+    files = data.get("files", {})
+    if not files:
+        return True
+    keys = list(files.keys())
+    sample = random.sample(keys, min(sample_size, len(keys)))
+    for rel in sample:
+        full = os.path.join(output_dir, rel)
+        if not os.path.isfile(full):
+            logger.debug("Index staleness: %s missing on disk; triggering rebuild", rel)
+            return False
+    return True
 
 
 def _rebuild_archive_index(output_dir: str, config: dict | None = None) -> dict | None:
@@ -1492,11 +1513,11 @@ def _collect_archive_files(
     """
     Return list of (full_path, mtime, size) for all archive files.
 
-    Uses file-based index when available; falls back to full scandir walk.
-    On fallback, rebuilds the index for future use.
+    Uses file-based index when available and spot-check validates it; otherwise
+    falls back to full scandir walk and rebuilds the index.
     """
     data = _load_archive_index(output_dir)
-    if data and data.get("files"):
+    if data and data.get("files") and _index_entries_valid(output_dir, data):
         result: list[tuple[str, float, int]] = []
         for rel, meta in data["files"].items():
             full = os.path.join(output_dir, rel)
@@ -1618,6 +1639,8 @@ def apply_retention(config: dict) -> int:
                     _remove_from_archive_index(output_dir, fpath)
                     deleted += 1
                 except OSError as exc:
+                    if exc.errno == errno.ENOENT:
+                        _remove_from_archive_index(output_dir, fpath)
                     logger.warning("Retention: failed to remove %s: %s", fpath, exc)
             else:
                 remaining.append((fpath, mtime, size))
@@ -1635,6 +1658,8 @@ def apply_retention(config: dict) -> int:
                     deleted += 1
                     removed_bytes += size
                 except OSError as exc:
+                    if exc.errno == errno.ENOENT:
+                        _remove_from_archive_index(output_dir, fpath)
                     logger.warning("Retention: failed to remove %s: %s", fpath, exc)
                 if i > 0 and i % 50 == 0:
                     _yield_for_web(config)
@@ -1656,6 +1681,8 @@ def apply_retention(config: dict) -> int:
                         _remove_from_archive_index(output_dir, fpath)
                         deleted += 1
                     except OSError as exc:
+                        if exc.errno == errno.ENOENT:
+                            _remove_from_archive_index(output_dir, fpath)
                         logger.warning("Retention: failed to remove %s: %s", fpath, exc)
 
         if retention_max_bytes > 0:
@@ -1685,6 +1712,8 @@ def apply_retention(config: dict) -> int:
                         deleted += 1
                         removed_bytes += size
                     except OSError as exc:
+                        if exc.errno == errno.ENOENT:
+                            _remove_from_archive_index(output_dir, fpath)
                         logger.warning("Retention: failed to remove %s: %s", fpath, exc)
                     if i > 0 and i % 50 == 0:
                         _yield_for_web(config)

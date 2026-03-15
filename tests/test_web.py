@@ -248,8 +248,17 @@ def test_archive_stats_counts_files_and_airports():
 
 
 def test_archive_stats_uses_index_when_present():
-    """_archive_stats uses index when available for fast lookup."""
+    """_archive_stats uses index when available and spot-check passes."""
     with tempfile.TemporaryDirectory() as tmpdir:
+        path1 = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "a.jpg")
+        path2 = os.path.join(tmpdir, "KAWO", "2024", "06", "15", "b.jpg")
+        os.makedirs(os.path.dirname(path1), exist_ok=True)
+        os.makedirs(os.path.dirname(path2), exist_ok=True)
+        with open(path1, "wb") as fh:
+            fh.write(b"x" * (1024 * 1024))
+        with open(path2, "wb") as fh:
+            fh.write(b"y" * (512 * 1024))
+
         idx_path = os.path.join(tmpdir, ".archive_index.json")
         index_data = {
             "version": 1,

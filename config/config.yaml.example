@@ -11,7 +11,7 @@ archive:
   # Local dev (no Docker): use a writable path, e.g. /tmp/aviationwx-archive
   output_dir: /archive
 
-  # Layout: output_dir/AIRPORT/metadata.json + YYYY/MM/DD/camera_name/filename (0o644)
+  # Layout: output_dir/.archive_index.json (auto) + AIRPORT/metadata.json + YYYY/MM/DD/camera_name/filename (0o644)
 
   # Retention days (0 = unlimited)
   retention_days: 0      # Days to keep (0 = unlimited)

@@ -1787,7 +1787,7 @@ def test_rebuild_archive_index():
 
 
 def test_collect_archive_files_uses_index_when_present():
-    """_collect_archive_files uses index when available."""
+    """_collect_archive_files uses index when available and spot-check passes."""
     from app.archiver import _add_to_archive_index, _collect_archive_files
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1795,7 +1795,6 @@ def test_collect_archive_files_uses_index_when_present():
         os.makedirs(os.path.dirname(fpath), exist_ok=True)
         with open(fpath, "wb") as fh:
             fh.write(b"data")
-        os.remove(fpath)
 
         _add_to_archive_index(tmpdir, fpath, 1234567890.0, 4)
         files = _collect_archive_files(tmpdir)
@@ -1804,6 +1803,29 @@ def test_collect_archive_files_uses_index_when_present():
         assert full.endswith("img.jpg")
         assert mtime == 1234567890.0
         assert size == 4
+
+
+def test_collect_archive_files_rebuilds_when_index_stale():
+    """_collect_archive_files falls back and rebuilds when spot-check finds missing."""
+    from app.archiver import (
+        _add_to_archive_index,
+        _collect_archive_files,
+        _load_archive_index,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fpath = os.path.join(tmpdir, "KSPB", "2024", "06", "15", "img.jpg")
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
+        with open(fpath, "wb") as fh:
+            fh.write(b"data")
+        _add_to_archive_index(tmpdir, fpath, 1234567890.0, 4)
+        os.remove(fpath)
+
+        files = _collect_archive_files(tmpdir)
+        assert len(files) == 0
+        data = _load_archive_index(tmpdir)
+        assert data is not None
+        assert len(data["files"]) == 0
 
 
 def test_collect_archive_files_falls_back_to_scandir_when_no_index():
@@ -1870,6 +1892,32 @@ def test_apply_retention_removes_from_index():
         data = _load_archive_index(tmpdir)
         assert data is not None
         assert "old.jpg" not in data["files"]
+
+
+def test_apply_retention_removes_stale_entry_on_enoent():
+    """apply_retention removes index entry when file was manually deleted (ENOENT)."""
+    import time
+
+    from app.archiver import _add_to_archive_index, _load_archive_index, apply_retention
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fpath = os.path.join(tmpdir, "manually_deleted.jpg")
+        with open(fpath, "wb") as fh:
+            fh.write(b"x" * 1024)
+        old_mtime = time.time() - (2 * 86400 + 1)
+        os.utime(fpath, (old_mtime, old_mtime))
+        _add_to_archive_index(tmpdir, fpath, old_mtime, 1024)
+        os.remove(fpath)
+
+        config = {
+            "archive": {"output_dir": tmpdir, "retention_days": 1},
+        }
+        deleted = apply_retention(config)
+        assert deleted == 0
+
+        data = _load_archive_index(tmpdir)
+        assert data is not None
+        assert "manually_deleted.jpg" not in data["files"]
 
 
 def test_apply_retention_zero_means_no_deletion():

@@ -16,6 +16,7 @@ Part of the [AviationWX.org](https://github.com/alexwitherspoon/aviationwx) proj
 - **Process-based workers** — archive jobs run in a separate process to avoid GIL contention; web UI stays responsive during runs
 - **Live log streaming** — worker forwards archiver logs to the main process in real time for the web UI
 - **Retention policy** — optional automatic cleanup of files older than N days
+- **File-based index** — fast stats and retention via `.archive_index.json`; falls back to full scan when missing or stale; auto-rebuilds on manual file changes
 - **Minimal dependencies** — Python + Flask + Requests + PyYAML + APScheduler
 - **Docker-first** — simple `docker compose up` to get started
 
@@ -130,6 +131,7 @@ docker run -d \
 
 ```
 archive/
+├── .archive_index.json        # File index for fast stats/retention (auto-managed; do not edit)
 ├── KSPB/
 │   ├── metadata.json          # Airport + webcams API response (updated each run)
 │   └── 2024/
@@ -150,6 +152,7 @@ archive/
 ```
 
 - **metadata.json** — Full airport and webcams API response; overwritten each run (not versioned).
+- **.archive_index.json** — File index for fast stats and retention. Auto-updated on save/delete; spot-checked before use; falls back to full scandir and rebuilds when stale (e.g. manual file deletion). Delete this file to force a full rebuild.
 - **Camera names** — Sanitized for Linux: lowercase, spaces and hyphens → underscores.
 
 ## Web GUI
@@ -255,7 +258,7 @@ Create the host paths first (e.g. `mkdir -p /mnt/user/appdata/aviationwx/archive
 ```
 aviationwx.org-archiver/
 ├── app/
-│   ├── archiver.py        # image fetching and archival logic
+│   ├── archiver.py        # image fetching, archival logic, file index, retention
 │   ├── config.py          # YAML config loader/saver
 │   ├── scheduler.py       # APScheduler background job
 │   ├── web.py             # Flask web GUI
