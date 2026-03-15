@@ -112,7 +112,8 @@ def _archive_job(config: dict) -> None:
     stale_threshold_seconds = interval_minutes * 2 * 60
 
     with _state_lock:
-        if _state["running"]:
+        manual_trigger = _state.pop("_manual_trigger", False)
+        if _state["running"] and not manual_trigger:
             running_since = _state.get("_running_since")
             elapsed = time.time() - running_since if running_since else 0
             if running_since is not None and elapsed > stale_threshold_seconds:
@@ -129,8 +130,9 @@ def _archive_job(config: dict) -> None:
             else:
                 logger.warning("Archive run skipped — previous run still in progress.")
                 return
-        _state["running"] = True
-        _state["_running_since"] = time.time()
+        if not manual_trigger:
+            _state["running"] = True
+            _state["_running_since"] = time.time()
 
     logger.debug("Starting archive job.")
     _append_log("Archive run started.", "INFO")
@@ -351,6 +353,9 @@ def trigger_run(config: dict) -> bool:
         if _state["running"]:
             logger.debug("Trigger skipped: archive run already in progress.")
             return False
+        _state["running"] = True
+        _state["_running_since"] = time.time()
+        _state["_manual_trigger"] = True
     logger.debug("Manual archive run triggered.")
     threading.Thread(target=_archive_job, args=[config], daemon=True).start()
     return True

@@ -347,7 +347,9 @@ def save_config(config: dict, config_path: str | None = None) -> bool:
     path = config_path or os.environ.get(_CONFIG_PATH_ENV, _DEFAULT_CONFIG_PATH)
 
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        dir_path = os.path.dirname(path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             yaml.safe_dump(config, fh, default_flow_style=False, sort_keys=False)
         logger.debug("Wrote config to %s (%d top-level keys)", path, len(config))
