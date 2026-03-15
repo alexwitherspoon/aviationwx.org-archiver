@@ -131,6 +131,9 @@ def _index_entries_valid(output_dir: str, data: dict, sample_size: int = 10) -> 
     keys = list(files.keys())
     sample = random.sample(keys, min(sample_size, len(keys)))
     for rel in sample:
+        if not _rel_path_safe(output_dir, rel):
+            logger.debug("Index: unsafe path %s in spot-check; triggering rebuild", rel)
+            return False
         full = os.path.join(output_dir, rel)
         if not os.path.isfile(full):
             logger.debug("Index staleness: %s missing on disk; triggering rebuild", rel)
@@ -845,7 +848,7 @@ def _get_existing_frames(output_dir: str, airport_code: str) -> set[tuple[int, i
     for fpath, st in _scandir_walk_files(airport_root):
         rel = os.path.relpath(fpath, airport_root)
         parts = rel.split(os.sep)
-        if len(parts) < 5:  # AIRPORT/YYYY/MM/DD/camera/file -> 5 parts for file path
+        if len(parts) < 5:  # YYYY/MM/DD/camera/file -> 5 parts for file path
             continue
         base, ext = os.path.splitext(os.path.basename(fpath))
         if ext.lower() not in (".jpg", ".jpeg", ".webp"):

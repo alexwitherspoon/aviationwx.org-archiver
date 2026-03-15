@@ -292,15 +292,30 @@ def _archive_stats_uncached(output_dir: str, config: dict | None = None) -> dict
         }
 
     data = _load_archive_index(output_dir)
+    use_index = False
     if data and data.get("files") and _index_entries_valid(output_dir, data):
+        from app.archiver import _rel_path_safe
+
         files = data.get("files", {})
         for rel_path, entry in files.items():
+            if not _rel_path_safe(output_dir, rel_path):
+                break
+            if not isinstance(entry, dict):
+                break
+            size = entry.get("size")
+            if not isinstance(size, int):
+                break
             total_files += 1
-            total_size += entry.get("size", 0)
+            total_size += size
             parts = rel_path.split(os.sep)
             if len(parts) >= 1:
                 airports.add(parts[0])
-    else:
+        else:
+            use_index = True
+    if not use_index:
+        total_files = 0
+        total_size = 0
+        airports.clear()
         for fpath, st in _scandir_walk_files(output_dir, config=config):
             total_files += 1
             total_size += st.st_size
