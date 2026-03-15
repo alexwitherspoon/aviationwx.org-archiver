@@ -1486,39 +1486,26 @@ def apply_retention(config: dict) -> int:
     else:
         # Single rule: use quick checks where possible
         if retention_days > 0:
-            oldest = _oldest_directory_date(output_dir)
-            if oldest is not None and oldest >= cutoff_dt:
-                logger.debug(
-                    "Retention: oldest dir %s is within %d-day window; "
-                    "no deletion needed.",
-                    oldest.strftime("%Y-%m-%d"),
-                    retention_days,
-                )
-            else:
-                if oldest is not None:
-                    logger.debug(
-                        "Retention: oldest dir %s before cutoff; scanning files.",
-                        oldest.strftime("%Y-%m-%d"),
-                    )
-                logger.debug(
-                    "Retention: scanning by age (cutoff %d days, before %s)",
-                    retention_days,
-                    cutoff_dt.isoformat(),
-                )
-                for root, _dirs, files in os.walk(output_dir):
-                    for fname in files:
-                        if fname == "metadata.json":
-                            continue
-                        fpath = os.path.join(root, fname)
-                        try:
-                            if os.path.getmtime(fpath) < cutoff_ts:
-                                os.remove(fpath)
-                                deleted += 1
-                        except OSError as exc:
-                            logger.warning(
-                                "Retention: failed to remove %s: %s", fpath, exc
-                            )
-                    _yield_for_web(config)
+            # Do not use _oldest_directory_date quick-check: folder dates are now
+            # airport-local (not UTC), so we cannot reliably interpret YYYY/MM/DD
+            # as a single timezone. Always scan by file mtime for correctness.
+            logger.debug(
+                "Retention: scanning by age (cutoff %d days, before %s)",
+                retention_days,
+                cutoff_dt.isoformat(),
+            )
+            for root, _dirs, files in os.walk(output_dir):
+                for fname in files:
+                    if fname == "metadata.json":
+                        continue
+                    fpath = os.path.join(root, fname)
+                    try:
+                        if os.path.getmtime(fpath) < cutoff_ts:
+                            os.remove(fpath)
+                            deleted += 1
+                    except OSError as exc:
+                        logger.warning("Retention: failed to remove %s: %s", fpath, exc)
+                _yield_for_web(config)
 
         if retention_max_bytes > 0:
             files_sorted = _collect_archive_files(output_dir, config)
