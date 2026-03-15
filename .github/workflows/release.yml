@@ -1,9 +1,10 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
@@ -19,21 +20,61 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  resolve-version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    # Only run when CI succeeded, or manual dispatch
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    outputs:
+      version: ${{ steps.outputs.outputs.version }}
+      ref: ${{ steps.outputs.outputs.ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.version) || github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Resolve version and ref
+        id: outputs
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            REF="refs/tags/${VERSION}"
+          else
+            # workflow_run: find v* tag on the commit CI ran on
+            SHA="${{ github.event.workflow_run.head_sha }}"
+            git fetch --depth=1 origin +refs/tags/*:refs/tags/* 2>/dev/null || true
+            TAGS=$(git tag --points-at "$SHA" 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+            if [ -z "$TAGS" ]; then
+              echo "No v* tag on commit $SHA, skipping release"
+              echo "version=" >> $GITHUB_OUTPUT
+              echo "ref=" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            VERSION="$TAGS"
+            REF="refs/tags/${VERSION}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "ref=$REF" >> $GITHUB_OUTPUT
+
   build-docker:
     name: Build and push Docker image
     runs-on: ubuntu-latest
+    needs: [resolve-version]
+    if: needs.resolve-version.outputs.version != ''
     steps:
       - name: Checkout code
         uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ needs.resolve-version.outputs.ref }}
 
       - name: Get version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.version }}"
-          else
-            VERSION="${GITHUB_REF#refs/tags/}"
-          fi
+          VERSION="${{ needs.resolve-version.outputs.version }}"
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
           echo "VERSION_NUM=${VERSION#v}" >> $GITHUB_OUTPUT
 
@@ -78,25 +119,24 @@ jobs:
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-docker]
+    needs: [build-docker, resolve-version]
     steps:
       - name: Checkout code
         uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ needs.resolve-version.outputs.ref }}
 
       - name: Get version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.version }}"
-          else
-            VERSION="${GITHUB_REF#refs/tags/}"
-          fi
+          VERSION="${{ needs.resolve-version.outputs.version }}"
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
           echo "VERSION_NUM=${VERSION#v}" >> $GITHUB_OUTPUT
 
       - name: Create Release
         uses: softprops/action-gh-release@v2.5.1
         with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
           name: AviationWX Archiver ${{ steps.version.outputs.VERSION }}
           body: |
             ## AviationWX.org Archiver ${{ steps.version.outputs.VERSION }}
