@@ -16,6 +16,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlparse
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -72,6 +73,52 @@ def _sanitize_camera_name(name: str, fallback: str = "unknown") -> str:
         safe = safe.replace("__", "_")
     safe = safe.strip("_")
     return safe if safe else fallback
+
+
+def _airport_timezone(airport: dict | None) -> str:
+    """Return IANA timezone (e.g. America/Los_Angeles) or UTC if unknown."""
+    if not airport:
+        return "UTC"
+    tz = (airport.get("timezone") or "").strip()
+    return tz if tz else "UTC"
+
+
+def _utc_ts_to_local_ymd(utc_ts: int | float, tz_name: str) -> tuple[str, str, str]:
+    """
+    Convert UTC Unix timestamp to (YYYY, MM, DD) in airport local time for folder path.
+
+    Uses airport local date so folders match when the image was captured at the airport,
+    not UTC (which can show tomorrow's date in evening US time).
+    """
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = timezone.utc
+    dt_utc = datetime.fromtimestamp(utc_ts, tz=timezone.utc)
+    dt_local = dt_utc.astimezone(tz)
+    return (
+        dt_local.strftime("%Y"),
+        dt_local.strftime("%m"),
+        dt_local.strftime("%d"),
+    )
+
+
+def _utc_dt_to_local_ymd(dt: datetime, tz_name: str) -> tuple[str, str, str]:
+    """
+    Convert UTC datetime to (YYYY, MM, DD) in airport local time for folder path.
+    """
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = timezone.utc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt_local = dt.astimezone(tz)
+    return (
+        dt_local.strftime("%Y"),
+        dt_local.strftime("%m"),
+        dt_local.strftime("%d"),
+    )
 
 
 # Browser-like User-Agent to avoid Cloudflare blocks.
@@ -492,6 +539,8 @@ def setup_airport_archive(airport: dict, config: dict) -> list[dict] | None:
 
     if webcams:
         run_ts = datetime.now(timezone.utc)
+        airport_tz = _airport_timezone(airport)
+        y, m, d = _utc_dt_to_local_ymd(run_ts, airport_tz)
         for webcam in webcams:
             cam_name = webcam.get("name")
             cam_safe = _sanitize_camera_name(
@@ -499,9 +548,9 @@ def setup_airport_archive(airport: dict, config: dict) -> list[dict] | None:
             )
             date_path = os.path.join(
                 airport_root,
-                run_ts.strftime("%Y"),
-                run_ts.strftime("%m"),
-                run_ts.strftime("%d"),
+                y,
+                m,
+                d,
                 cam_safe,
             )
             try:
@@ -1035,21 +1084,23 @@ def save_history_image_from_url(
     frame_ts: int,
     config: dict,
     camera_name: str | None = None,
+    airport_tz: str = "UTC",
 ) -> str | None:
     """
     Download and save a history API frame via URL with resume support.
 
     Uses download_image_to_file for resume on interrupt; deletes partial on failure.
+    Folder date uses airport local timezone so folders match when image was captured.
     """
     output_dir = config["archive"]["output_dir"]
     cam_safe = _sanitize_camera_name(camera_name or "", fallback=f"cam_{cam_index}")
-    dt = datetime.fromtimestamp(frame_ts, tz=timezone.utc)
+    y, m, d = _utc_ts_to_local_ymd(frame_ts, airport_tz)
     date_path = os.path.join(
         output_dir,
         airport_code.upper(),
-        dt.strftime("%Y"),
-        dt.strftime("%m"),
-        dt.strftime("%d"),
+        y,
+        m,
+        d,
         cam_safe,
     )
 
@@ -1089,23 +1140,24 @@ def save_history_image(
     frame_ts: int,
     config: dict,
     camera_name: str | None = None,
+    airport_tz: str = "UTC",
 ) -> str | None:
     """
     Save a history API frame to the archive.
 
     Filename: {ts}_{cam}.jpg for uniqueness.
-    Directory: output_dir/AIRPORT/YYYY/MM/DD/camera_name/
+    Directory: output_dir/AIRPORT/YYYY/MM/DD/camera_name/ (date in airport local time).
     Files are created with mode 0o644 (owner rw, group/others r).
     """
     output_dir = config["archive"]["output_dir"]
     cam_safe = _sanitize_camera_name(camera_name or "", fallback=f"cam_{cam_index}")
-    dt = datetime.fromtimestamp(frame_ts, tz=timezone.utc)
+    y, m, d = _utc_ts_to_local_ymd(frame_ts, airport_tz)
     date_path = os.path.join(
         output_dir,
         airport_code.upper(),
-        dt.strftime("%Y"),
-        dt.strftime("%m"),
-        dt.strftime("%d"),
+        y,
+        m,
+        d,
         cam_safe,
     )
 
@@ -1149,23 +1201,26 @@ def save_image_from_url(
     config: dict,
     timestamp: datetime | None = None,
     camera_name: str | None = None,
+    airport_tz: str = "UTC",
 ) -> str | None:
     """
     Download and save an image via URL with resume support.
 
     Uses download_image_to_file for resume on interrupt; deletes partial on failure.
+    Folder date uses airport local timezone so folders match when image was captured.
     """
     if timestamp is None:
         timestamp = datetime.now(timezone.utc)
 
     output_dir = config["archive"]["output_dir"]
     cam_safe = _sanitize_camera_name(camera_name or "", fallback="current")
+    y, m, d = _utc_dt_to_local_ymd(timestamp, airport_tz)
     date_path = os.path.join(
         output_dir,
         airport_code.upper(),
-        timestamp.strftime("%Y"),
-        timestamp.strftime("%m"),
-        timestamp.strftime("%d"),
+        y,
+        m,
+        d,
         cam_safe,
     )
 
@@ -1201,11 +1256,13 @@ def save_image(
     config: dict,
     timestamp: datetime | None = None,
     camera_name: str | None = None,
+    airport_tz: str = "UTC",
 ) -> str | None:
     """
     Save image bytes to the archive directory.
 
     Directory structure: output_dir/AIRPORT/YYYY/MM/DD/camera_name/filename
+    Date uses airport local timezone so folders match when image was captured.
 
     The filename is derived from the URL basename; a timestamp prefix is added
     to avoid collisions when the same URL is fetched repeatedly.
@@ -1218,12 +1275,13 @@ def save_image(
 
     output_dir = config["archive"]["output_dir"]
     cam_safe = _sanitize_camera_name(camera_name or "", fallback="current")
+    y, m, d = _utc_dt_to_local_ymd(timestamp, airport_tz)
     date_path = os.path.join(
         output_dir,
         airport_code.upper(),
-        timestamp.strftime("%Y"),
-        timestamp.strftime("%m"),
-        timestamp.strftime("%d"),
+        y,
+        m,
+        d,
         cam_safe,
     )
 
@@ -1580,6 +1638,8 @@ def _run_archive_round_robin(
             webcam, frame = queues[code].pop(0)
             cam_index = webcam.get("index", 0)
             cam_name = webcam.get("name")
+            airport = airport_by_code.get(code, {})
+            airport_tz = _airport_timezone(airport)
 
             if frame is not None:
                 stats["images_fetched"] += 1
@@ -1590,6 +1650,7 @@ def _run_archive_round_robin(
                     frame["timestamp"],
                     config,
                     camera_name=cam_name,
+                    airport_tz=airport_tz,
                 )
                 if saved:
                     stats["images_saved"] += 1
@@ -1603,6 +1664,7 @@ def _run_archive_round_robin(
                         config,
                         timestamp=run_ts,
                         camera_name=cam_name,
+                        airport_tz=airport_tz,
                     )
                     if saved:
                         stats["images_saved"] += 1
@@ -1639,6 +1701,7 @@ def _run_archive_history(
 
     output_dir = config["archive"]["output_dir"]
     existing = _get_existing_frames(output_dir, code)
+    airport_tz = _airport_timezone(airport)
     logger.debug(
         "Processing %s: %d webcams, %d existing frames",
         code,
@@ -1664,7 +1727,13 @@ def _run_archive_history(
                 stats["images_fetched"] += 1
                 cam_name = webcam.get("name")
                 saved = save_history_image_from_url(
-                    frame["url"], code, cam_index, ts, config, camera_name=cam_name
+                    frame["url"],
+                    code,
+                    cam_index,
+                    ts,
+                    config,
+                    camera_name=cam_name,
+                    airport_tz=airport_tz,
                 )
                 if saved:
                     stats["images_saved"] += 1
@@ -1686,6 +1755,7 @@ def _run_archive_history(
                     config,
                     timestamp=run_ts,
                     camera_name=cam_name,
+                    airport_tz=airport_tz,
                 )
                 if saved:
                     stats["images_saved"] += 1
@@ -1702,6 +1772,7 @@ def _run_archive_current_only(
     webcams: list[dict] | None = None,
 ) -> None:
     """Archive using current image only (legacy behavior)."""
+    airport_tz = _airport_timezone(airport)
     if webcams is None:
         webcams = _fetch_webcams_list(airport, config)
     if webcams:
@@ -1712,7 +1783,12 @@ def _run_archive_current_only(
             stats["images_fetched"] += 1
             cam_name = webcam.get("name")
             saved = save_image_from_url(
-                url, code, config, timestamp=run_ts, camera_name=cam_name
+                url,
+                code,
+                config,
+                timestamp=run_ts,
+                camera_name=cam_name,
+                airport_tz=airport_tz,
             )
             if saved:
                 stats["images_saved"] += 1
@@ -1723,7 +1799,9 @@ def _run_archive_current_only(
             logger.debug("No image URLs for %s (current-only mode)", code)
         for url in image_urls:
             stats["images_fetched"] += 1
-            saved = save_image_from_url(url, code, config, timestamp=run_ts)
+            saved = save_image_from_url(
+                url, code, config, timestamp=run_ts, airport_tz=airport_tz
+            )
             if saved:
                 stats["images_saved"] += 1
 

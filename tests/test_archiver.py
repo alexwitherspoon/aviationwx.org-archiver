@@ -1908,6 +1908,34 @@ def test_save_history_image_returns_none_on_oserror():
     assert result is None
 
 
+def test_save_history_image_uses_airport_local_date():
+    """save_history_image uses airport timezone for folder date (not UTC)."""
+    from app.archiver import save_history_image
+
+    # 2024-06-15 02:00 UTC = 2024-06-14 19:00 America/Los_Angeles
+    ts_utc_midnight_15 = 1718413200  # 2024-06-15 02:00:00 UTC
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config = {"archive": {"output_dir": tmpdir}}
+        data = b"\xff\xd8\xff" + b"\x00" * 100
+
+        path_utc = save_history_image(
+            data, "KSPB", 0, ts_utc_midnight_15, config, airport_tz="UTC"
+        )
+        path_pacific = save_history_image(
+            data,
+            "KSPB",
+            1,
+            ts_utc_midnight_15,
+            config,
+            airport_tz="America/Los_Angeles",
+        )
+
+        assert path_utc is not None
+        assert path_pacific is not None
+        assert "2024" in path_utc and "06" in path_utc and "15" in path_utc
+        assert "2024" in path_pacific and "06" in path_pacific and "14" in path_pacific
+
+
 def test_save_history_image_sets_file_permissions_0644():
     """save_history_image creates files with mode 0o644 (owner rw, group/others r)."""
     import stat
