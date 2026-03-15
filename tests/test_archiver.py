@@ -1753,7 +1753,7 @@ def test_add_and_remove_archive_index():
         _add_to_archive_index(tmpdir, fpath, 1234567890.0, 4)
         data = _load_archive_index(tmpdir)
         assert data is not None
-        rel = "KSPB/2024/06/15/img.jpg"
+        rel = os.path.relpath(fpath, tmpdir)
         assert rel in data["files"]
         assert data["files"][rel] == {"mtime": 1234567890.0, "size": 4}
 
@@ -1780,10 +1780,12 @@ def test_rebuild_archive_index():
         result = _rebuild_archive_index(tmpdir)
         assert result is not None
         assert len(result["files"]) == 2
-        assert "KSPB/2024/06/15/a.jpg" in result["files"]
-        assert "KAWO/2024/06/15/b.jpg" in result["files"]
-        assert result["files"]["KSPB/2024/06/15/a.jpg"]["size"] == 100
-        assert result["files"]["KAWO/2024/06/15/b.jpg"]["size"] == 200
+        rel1 = os.path.relpath(path1, tmpdir)
+        rel2 = os.path.relpath(path2, tmpdir)
+        assert rel1 in result["files"]
+        assert rel2 in result["files"]
+        assert result["files"][rel1]["size"] == 100
+        assert result["files"][rel2]["size"] == 200
 
 
 def test_collect_archive_files_uses_index_when_present():
@@ -1846,7 +1848,7 @@ def test_collect_archive_files_falls_back_to_scandir_when_no_index():
 
         data = _load_archive_index(tmpdir)
         assert data is not None
-        assert "KSPB/2024/06/15/a.jpg" in data["files"]
+        assert os.path.relpath(path1, tmpdir) in data["files"]
 
 
 def test_save_image_adds_to_index():

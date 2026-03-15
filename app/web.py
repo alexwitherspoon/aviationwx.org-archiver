@@ -90,7 +90,7 @@ def _parse_timestamp_from_filename(filename: str) -> str | None:
             ts = int(first)
             dt = datetime.fromtimestamp(ts, tz=timezone.utc)
             return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-        except (ValueError, OSError):
+        except (ValueError, OSError):  # fmt: skip
             return None
     date_ok = re.match(r"^\d{8}$", first)
     time_ok = len(parts) >= 2 and re.match(r"^\d{6}$", parts[1])
@@ -122,7 +122,13 @@ def _archive_tree_uncached(output_dir: str) -> dict:
 
     try:
         with os.scandir(output_dir) as it:
-            dirs = [e for e in it if e.is_dir() and not e.name.startswith(".")]
+            dirs = []
+            for e in it:
+                try:
+                    if e.is_dir(follow_symlinks=False) and not e.name.startswith("."):
+                        dirs.append(e)
+                except OSError:
+                    pass
             airports = sorted(dirs, key=lambda e: e.name)
     except OSError:
         return tree
@@ -132,11 +138,17 @@ def _archive_tree_uncached(output_dir: str) -> dict:
         tree[airport] = {}
         try:
             with os.scandir(airport_entry.path) as it:
-                dirs = [
-                    e
-                    for e in it
-                    if e.is_dir() and e.name.isdigit() and len(e.name) == 4
-                ]
+                dirs = []
+                for e in it:
+                    try:
+                        if (
+                            e.is_dir(follow_symlinks=False)
+                            and e.name.isdigit()
+                            and len(e.name) == 4
+                        ):
+                            dirs.append(e)
+                    except OSError:
+                        pass
                 years = sorted(dirs, key=lambda e: e.name)
         except OSError:
             continue
@@ -145,11 +157,17 @@ def _archive_tree_uncached(output_dir: str) -> dict:
             tree[airport][year] = {}
             try:
                 with os.scandir(year_entry.path) as it:
-                    dirs = [
-                        e
-                        for e in it
-                        if e.is_dir() and e.name.isdigit() and len(e.name) == 2
-                    ]
+                    dirs = []
+                    for e in it:
+                        try:
+                            if (
+                                e.is_dir(follow_symlinks=False)
+                                and e.name.isdigit()
+                                and len(e.name) == 2
+                            ):
+                                dirs.append(e)
+                        except OSError:
+                            pass
                     months = sorted(dirs, key=lambda e: e.name)
             except OSError:
                 continue
@@ -158,11 +176,17 @@ def _archive_tree_uncached(output_dir: str) -> dict:
                 tree[airport][year][month] = {}
                 try:
                     with os.scandir(month_entry.path) as it:
-                        dirs = [
-                            e
-                            for e in it
-                            if e.is_dir() and e.name.isdigit() and len(e.name) == 2
-                        ]
+                        dirs = []
+                        for e in it:
+                            try:
+                                if (
+                                    e.is_dir(follow_symlinks=False)
+                                    and e.name.isdigit()
+                                    and len(e.name) == 2
+                                ):
+                                    dirs.append(e)
+                            except OSError:
+                                pass
                         days = sorted(dirs, key=lambda e: e.name)
                 except OSError:
                     continue
@@ -171,7 +195,13 @@ def _archive_tree_uncached(output_dir: str) -> dict:
                     tree[airport][year][month][day] = {}
                     try:
                         with os.scandir(day_entry.path) as it:
-                            dirs = [e for e in it if e.is_dir()]
+                            dirs = []
+                            for e in it:
+                                try:
+                                    if e.is_dir(follow_symlinks=False):
+                                        dirs.append(e)
+                                except OSError:
+                                    pass
                             cameras = sorted(dirs, key=lambda e: e.name)
                     except OSError:
                         continue
@@ -179,7 +209,14 @@ def _archive_tree_uncached(output_dir: str) -> dict:
                         camera = camera_entry.name
                         try:
                             with os.scandir(camera_entry.path) as it:
-                                files = sorted([e.name for e in it if e.is_file()])
+                                names = []
+                                for e in it:
+                                    try:
+                                        if e.is_file(follow_symlinks=False):
+                                            names.append(e.name)
+                                    except OSError:
+                                        pass
+                                files = sorted(names)
                         except OSError:
                             files = []
                         tree[airport][year][month][day][camera] = files
@@ -293,7 +330,7 @@ def _archive_stats_uncached(output_dir: str, config: dict | None = None) -> dict
 
     data = _load_archive_index(output_dir)
     use_index = False
-    if data and data.get("files") and _index_entries_valid(output_dir, data):
+    if data and "files" in data and _index_entries_valid(output_dir, data):
         from app.archiver import _rel_path_safe
 
         files = data.get("files", {})
@@ -307,7 +344,7 @@ def _archive_stats_uncached(output_dir: str, config: dict | None = None) -> dict
                 break
             total_files += 1
             total_size += size
-            parts = rel_path.split(os.sep)
+            parts = os.path.normpath(rel_path).split(os.sep)
             if len(parts) >= 1:
                 airports.add(parts[0])
         else:
@@ -321,7 +358,7 @@ def _archive_stats_uncached(output_dir: str, config: dict | None = None) -> dict
             total_files += 1
             total_size += st.st_size
             collected.append((fpath, st.st_mtime, st.st_size))
-            parts = fpath.replace(output_dir, "").strip(os.sep).split(os.sep)
+            parts = os.path.relpath(fpath, output_dir).split(os.sep)
             if len(parts) >= 1:
                 airports.add(parts[0])
         _rebuild_archive_index(output_dir, config, pre_collected=collected)

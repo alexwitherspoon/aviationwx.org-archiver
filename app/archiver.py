@@ -65,7 +65,7 @@ def _with_index_lock(output_dir: str):
     lock_path = _archive_index_lock_path(output_dir)
     lock = FileLock(lock_path)
     try:
-        lock.acquire()
+        lock.acquire(timeout=60)
     except (Timeout, OSError) as exc:
         logger.debug("Index lock failed (%s), trying soft lock: %s", lock_path, exc)
         soft_lock = SoftFileLock(lock_path)
@@ -207,7 +207,7 @@ def _rel_path_safe(output_dir: str, rel: str) -> bool:
         full = os.path.normpath(os.path.join(output_dir, rel))
         base = os.path.normpath(output_dir)
         return full == base or full.startswith(base + os.sep)
-    except (ValueError, OSError):
+    except (ValueError, OSError):  # fmt: skip
         return False
 
 
@@ -972,7 +972,7 @@ def _get_existing_frames(output_dir: str, airport_code: str) -> set[tuple[int, i
                 _delete_partial_file(fpath)
                 continue
             existing.add((ts, cam))
-        except (ValueError, OSError):
+        except (ValueError, OSError):  # fmt: skip
             continue
     logger.debug("Found %d existing frames for %s", len(existing), airport_code)
     return existing
@@ -1077,7 +1077,7 @@ def _parse_content_digest(
                 digest = base64.b64decode(match.group(1))
                 if digest:
                     return (algo, digest)
-            except (ValueError, TypeError):
+            except (ValueError, TypeError):  # fmt: skip
                 continue
     return None
 
@@ -1092,7 +1092,7 @@ def _parse_content_md5(
     try:
         digest = base64.b64decode(raw.strip())
         return digest if len(digest) == 16 else None
-    except (ValueError, TypeError):
+    except (ValueError, TypeError):  # fmt: skip
         return None
 
 
@@ -1148,7 +1148,7 @@ def _verify_file_integrity(
             for chunk in iter(lambda: fh.read(MD5_READ_CHUNK_SIZE), b""):
                 h.update(chunk)
         return h.digest() == expected_digest
-    except (OSError, ValueError):
+    except (OSError, ValueError):  # fmt: skip
         return False
 
 
@@ -1677,7 +1677,7 @@ def _collect_archive_files(
     falls back to full scandir walk and rebuilds the index.
     """
     data = _load_archive_index(output_dir)
-    if data and data.get("files") and _index_entries_valid(output_dir, data):
+    if data and "files" in data and _index_entries_valid(output_dir, data):
         result: list[tuple[str, float, int]] = []
         for rel, meta in data["files"].items():
             if not _rel_path_safe(output_dir, rel):
@@ -1765,14 +1765,6 @@ def apply_retention(config: dict) -> int:
     Returns the number of files deleted.
     """
     output_dir = config["archive"]["output_dir"]
-    batch = config.get("_archive_index_batch")
-    if batch is None:
-        batch = {"adds": {}, "removes": set()}
-        config["_archive_index_batch"] = batch
-        own_batch = True
-    else:
-        own_batch = False
-
     retention_days = config["archive"].get("retention_days", 0)
     retention_max_gb = config["archive"].get("retention_max_gb", 0)
     if isinstance(retention_max_gb, str):
@@ -1800,6 +1792,14 @@ def apply_retention(config: dict) -> int:
         )
         return 0
 
+    batch = config.get("_archive_index_batch")
+    if batch is None:
+        batch = {"adds": {}, "removes": set()}
+        config["_archive_index_batch"] = batch
+        own_batch = True
+    else:
+        own_batch = False
+
     deleted = 0
     cutoff_dt = (
         datetime.now(timezone.utc) - timedelta(days=retention_days)
@@ -1813,7 +1813,7 @@ def apply_retention(config: dict) -> int:
         if retention_days > 0 and retention_max_bytes > 0:
             files_list = _collect_archive_files(output_dir, config)
             remaining: list[tuple[str, float, int]] = []
-            for fpath, mtime, size in files_list:
+            for i, (fpath, mtime, size) in enumerate(files_list):
                 if mtime < cutoff_ts:
                     try:
                         os.remove(fpath)
@@ -1822,9 +1822,13 @@ def apply_retention(config: dict) -> int:
                     except OSError as exc:
                         if exc.errno == errno.ENOENT:
                             _remove_from_archive_index(output_dir, fpath, batch=batch)
+                        else:
+                            remaining.append((fpath, mtime, size))
                         logger.warning("Retention: failed to remove %s: %s", fpath, exc)
                 else:
                     remaining.append((fpath, mtime, size))
+                if i > 0 and i % 100 == 0:
+                    _yield_for_web(config)
             total_bytes = sum(s for _, _, s in remaining)
             if total_bytes > retention_max_bytes:
                 remaining.sort(key=lambda x: x[1])
@@ -1855,7 +1859,9 @@ def apply_retention(config: dict) -> int:
                     retention_days,
                     cutoff_dt.isoformat(),
                 )
-                for fpath, mtime, _size in _collect_archive_files(output_dir, config):
+                for i, (fpath, mtime, _size) in enumerate(
+                    _collect_archive_files(output_dir, config)
+                ):
                     if mtime < cutoff_ts:
                         try:
                             os.remove(fpath)
@@ -1869,6 +1875,8 @@ def apply_retention(config: dict) -> int:
                             logger.warning(
                                 "Retention: failed to remove %s: %s", fpath, exc
                             )
+                    if i > 0 and i % 100 == 0:
+                        _yield_for_web(config)
 
             if retention_max_bytes > 0:
                 files_sorted = _collect_archive_files(output_dir, config)
@@ -1907,8 +1915,10 @@ def apply_retention(config: dict) -> int:
                         if i > 0 and i % 50 == 0:
                             _yield_for_web(config)
     finally:
-        if own_batch and (batch["adds"] or batch["removes"]):
-            _flush_archive_index_batch(output_dir, batch)
+        if own_batch:
+            config.pop("_archive_index_batch", None)
+            if batch["adds"] or batch["removes"]:
+                _flush_archive_index_batch(output_dir, batch)
 
     if deleted:
         reasons = []

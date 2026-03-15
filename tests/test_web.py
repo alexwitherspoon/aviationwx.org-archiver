@@ -260,11 +260,13 @@ def test_archive_stats_uses_index_when_present():
             fh.write(b"y" * (512 * 1024))
 
         idx_path = os.path.join(tmpdir, ".archive_index.json")
+        rel1 = os.path.relpath(path1, tmpdir)
+        rel2 = os.path.relpath(path2, tmpdir)
         index_data = {
             "version": 1,
             "files": {
-                "KSPB/2024/06/15/a.jpg": {"mtime": 1718456780.0, "size": 1024 * 1024},
-                "KAWO/2024/06/15/b.jpg": {"mtime": 1718456780.0, "size": 512 * 1024},
+                rel1: {"mtime": 1718456780.0, "size": 1024 * 1024},
+                rel2: {"mtime": 1718456780.0, "size": 512 * 1024},
             },
         }
         with open(idx_path, "w") as fh:
