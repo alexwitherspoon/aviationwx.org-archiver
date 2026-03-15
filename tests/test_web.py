@@ -247,7 +247,7 @@ def test_archive_stats_returns_empty_when_output_dir_missing():
     """_archive_stats returns zeros when output_dir does not exist."""
     result = _archive_stats("/nonexistent/path")
     assert result["total_files"] == 0
-    assert result["total_size_mb"] == 0.0
+    assert result["total_size_gb"] == 0.0
     assert result["airports"] == []
     assert "disk_usage" in result
 
@@ -267,7 +267,7 @@ def test_archive_stats_counts_files_and_airports():
         stats = _archive_stats(tmpdir)
 
     assert stats["total_files"] == 2
-    assert stats["total_size_mb"] >= 1.0
+    assert stats["total_size_gb"] >= 0.001  # 1.5 MB = ~0.0015 GB
     assert set(stats["airports"]) == {"KSPB", "KAWO"}
 
 
@@ -299,7 +299,7 @@ def test_archive_stats_uses_index_when_present():
         stats = _archive_stats(tmpdir)
 
     assert stats["total_files"] == 2
-    assert stats["total_size_mb"] >= 1.0
+    assert stats["total_size_gb"] >= 0.001  # 1.5 MB = ~0.0015 GB
     assert set(stats["airports"]) == {"KSPB", "KAWO"}
 
 
@@ -327,7 +327,7 @@ def test_archive_stats_returns_zero_when_scan_yields_no_files():
             stats = _archive_stats(tmpdir)
 
     assert stats["total_files"] == 0
-    assert stats["total_size_mb"] == 0.0
+    assert stats["total_size_gb"] == 0.0
 
 
 # ---------------------------------------------------------------------------

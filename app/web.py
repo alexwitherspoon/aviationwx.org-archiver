@@ -30,7 +30,6 @@ from flask import (
 from app.config import save_config, validate_config
 from app.constants import (
     BYTES_PER_GIB,
-    BYTES_PER_MIB,
     BYTES_PER_PIB,
     BYTES_PER_TIB,
     DEFAULT_INTERVAL_MINUTES,
@@ -341,7 +340,7 @@ def _archive_stats_uncached(output_dir: str, config: dict | None = None) -> dict
     if not os.path.isdir(output_dir):
         return {
             "total_files": 0,
-            "total_size_mb": 0.0,
+            "total_size_gb": 0.0,
             "airports": [],
             "disk_usage": _disk_usage(os.path.dirname(output_dir) or "/"),
         }
@@ -386,7 +385,7 @@ def _archive_stats_uncached(output_dir: str, config: dict | None = None) -> dict
 
     return {
         "total_files": total_files,
-        "total_size_mb": round(total_size / BYTES_PER_MIB, 2),
+        "total_size_gb": round(total_size / BYTES_PER_GIB, 3),
         "airports": sorted(airports),
         "disk_usage": _disk_usage(output_dir),
     }
