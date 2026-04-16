@@ -134,7 +134,7 @@ jobs:
           echo "VERSION_NUM=${VERSION#v}" >> $GITHUB_OUTPUT
 
       - name: Create Release
-        uses: softprops/action-gh-release@71d29a04ae7c63895f38299d7a5e05d238f7f445 # v2.5.1
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           tag_name: ${{ steps.version.outputs.VERSION }}
           name: AviationWX Archiver ${{ steps.version.outputs.VERSION }}
