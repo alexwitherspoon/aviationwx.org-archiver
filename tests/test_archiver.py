@@ -345,6 +345,20 @@ def test_validate_config_rejects_boolean_for_waitress_threads():
     assert any("boolean" in e.lower() for e in errors)
 
 
+def test_validate_config_rejects_non_whole_float_for_integer_fields():
+    """Integer config fields must not silently truncate fractional floats."""
+    from app.config import validate_config
+
+    base = {
+        "archive": {"output_dir": "/archive"},
+        "source": {"airports_api_url": "https://api.example.com/airports"},
+        "airports": {"archive_all": True, "selected": []},
+    }
+    config = {**base, "schedule": {"fetch_on_start_delay_seconds": 1.5}}
+    errors = validate_config(config)
+    assert any("whole number" in e.lower() for e in errors)
+
+
 # ---------------------------------------------------------------------------
 # Airport selection tests
 # ---------------------------------------------------------------------------

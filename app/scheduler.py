@@ -16,7 +16,11 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app.config import validate_config
+from app.config import (
+    DEFAULT_FETCH_ON_START_DELAY_SECONDS,
+    _coerce_int_for_validation,
+    validate_config,
+)
 from app.constants import DEFAULT_INTERVAL_MINUTES, DEFAULT_MAX_LOG_ENTRIES
 from app.worker import MSG_COMPLETE, MSG_LOG, run_archive_worker, run_retention_worker
 
@@ -396,7 +400,22 @@ def start_scheduler(config_getter) -> BackgroundScheduler:
     if config["schedule"].get("fetch_on_start", True):
         logger.info("fetch_on_start is enabled — running initial archive pass.")
         _append_log("Running initial archive pass (fetch_on_start).", "INFO")
-        delay = max(0, int(config["schedule"].get("fetch_on_start_delay_seconds", 0)))
+        sched = config.get("schedule") or {}
+        delay_raw = sched.get("fetch_on_start_delay_seconds")
+        if delay_raw is None:
+            delay_raw = DEFAULT_FETCH_ON_START_DELAY_SECONDS
+        delay_parsed, delay_err = _coerce_int_for_validation(
+            delay_raw, "schedule.fetch_on_start_delay_seconds"
+        )
+        if delay_err or delay_parsed is None:
+            logger.warning(
+                "Invalid schedule.fetch_on_start_delay_seconds (%r): %s — using 0.",
+                delay_raw,
+                delay_err,
+            )
+            delay = 0
+        else:
+            delay = max(0, delay_parsed)
 
         def _delayed_start() -> None:
             if delay:

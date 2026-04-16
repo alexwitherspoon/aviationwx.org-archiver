@@ -245,6 +245,8 @@ def _coerce_int_for_validation(
     if isinstance(raw, int):
         return raw, None
     if isinstance(raw, float):
+        if not raw.is_integer():
+            return None, f"{field} must be a whole number (integer), not {raw}."
         return int(raw), None
     if isinstance(raw, str):
         s = raw.strip()

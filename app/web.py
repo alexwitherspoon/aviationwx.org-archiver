@@ -29,7 +29,12 @@ from flask import (
     url_for,
 )
 
-from app.config import save_config, validate_config
+from app.config import (
+    DEFAULT_SLOW_REQUEST_LOG_SECONDS,
+    _coerce_float_for_validation,
+    save_config,
+    validate_config,
+)
 from app.constants import (
     BYTES_PER_GIB,
     BYTES_PER_PIB,
@@ -83,18 +88,25 @@ def _start_request_timer():
 @app.after_request
 def _log_slow_request(response):
     cfg = app.config.get("ARCHIVER_CONFIG") or {}
-    threshold = (cfg.get("web") or {}).get("slow_request_log_seconds", 0)
-    if threshold and threshold > 0:
-        start = getattr(g, "_request_start", None)
-        if start is not None:
-            elapsed = time.perf_counter() - start
-            if elapsed >= threshold:
-                logger.warning(
-                    "Slow request %.2fs %s %s",
-                    elapsed,
-                    request.method,
-                    request.path,
-                )
+    web_cfg = cfg.get("web") or {}
+    raw = web_cfg.get("slow_request_log_seconds")
+    if raw is None:
+        raw = DEFAULT_SLOW_REQUEST_LOG_SECONDS
+    threshold, thr_err = _coerce_float_for_validation(
+        raw, "web.slow_request_log_seconds"
+    )
+    if thr_err or threshold is None or threshold <= 0:
+        return response
+    start = getattr(g, "_request_start", None)
+    if start is not None:
+        elapsed = time.perf_counter() - start
+        if elapsed >= threshold:
+            logger.warning(
+                "Slow request %.2fs %s %s",
+                elapsed,
+                request.method,
+                request.path,
+            )
     return response
 
 

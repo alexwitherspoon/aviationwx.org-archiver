@@ -802,6 +802,24 @@ def test_api_status_light_skips_archive_stats(flask_client):
     mock_stats.assert_not_called()
 
 
+def test_dashboard_accepts_string_slow_request_threshold(flask_client):
+    """Quoted YAML web.slow_request_log_seconds must not raise during requests."""
+    cfg = flask_app.config["ARCHIVER_CONFIG"]
+    prev = cfg["web"].get("slow_request_log_seconds")
+    try:
+        cfg["web"]["slow_request_log_seconds"] = "2.5"
+        flask_app.config["ARCHIVER_CONFIG"] = cfg
+        resp = flask_client.get("/")
+    finally:
+        if prev is not None:
+            cfg["web"]["slow_request_log_seconds"] = prev
+        else:
+            cfg["web"].pop("slow_request_log_seconds", None)
+        flask_app.config["ARCHIVER_CONFIG"] = cfg
+
+    assert resp.status_code == 200
+
+
 def test_dashboard_footer_shows_version(flask_client):
     """Dashboard page includes version in footer."""
     resp = flask_client.get("/")

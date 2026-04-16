@@ -242,6 +242,29 @@ def test_start_scheduler_adds_job_and_runs_fetch_on_start():
     mock_thread.return_value.start.assert_called_once()
 
 
+def test_start_scheduler_invalid_fetch_delay_logs_and_uses_zero():
+    """start_scheduler does not crash when fetch_on_start_delay_seconds is invalid."""
+    from app.scheduler import start_scheduler
+
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["airports"]["selected"] = ["KSPB"]
+    config["schedule"]["fetch_on_start"] = True
+    config["schedule"]["fetch_on_start_delay_seconds"] = "not-an-int"
+
+    def config_getter():
+        return config
+
+    with _mock_process_to_run_synchronously():
+        with patch("app.worker.run_archive"):
+            with patch("app.scheduler.threading.Thread") as mock_thread:
+                with patch("app.scheduler.logger") as mock_logger:
+                    scheduler = start_scheduler(config_getter)
+
+    assert scheduler is not None
+    mock_thread.return_value.start.assert_called_once()
+    mock_logger.warning.assert_called()
+
+
 def test_start_scheduler_skips_initial_run_when_fetch_on_start_false():
     """start_scheduler does not run initial pass when fetch_on_start is False."""
     from app.scheduler import start_scheduler
