@@ -1,0 +1,181 @@
+"""
+Lazy browse archive listing for the web UI.
+
+Builds one tree level at a time from the archive index when valid, otherwise
+uses scoped os.scandir. File lists under a camera are paginated.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any
+
+# Image extensions for preview carousel (lowercase, no dot)
+IMAGE_EXTENSIONS = frozenset({"jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"})
+
+
+def parse_browse_path(path: str | None) -> tuple[str, ...]:
+    """Parse URL path query into 0–5 path segments. Raises ValueError if invalid."""
+    if not path or not str(path).strip():
+        return ()
+    parts: list[str] = []
+    for p in str(path).replace("\\", "/").strip().strip("/").split("/"):
+        if not p or p in (".", ".."):
+            raise ValueError("invalid path segment")
+        parts.append(p)
+    if len(parts) > 5:
+        raise ValueError("path too deep")
+    return tuple(parts)
+
+
+def safe_browse_segments(parts: tuple[str, ...]) -> bool:
+    """Reject empty or traversal-like segment values."""
+    for p in parts:
+        if not p or p.strip() != p:
+            return False
+        if ".." in p:
+            return False
+    return True
+
+
+def _is_image_filename(name: str) -> bool:
+    if "." not in name:
+        return False
+    ext = name.rsplit(".", 1)[-1].lower()
+    return ext in IMAGE_EXTENSIONS
+
+
+def index_child_file_counts(
+    files: dict[str, Any], prefix_parts: tuple[str, ...]
+) -> dict[str, int]:
+    """Count archive files under each immediate child name at the next level."""
+    k = len(prefix_parts)
+    if k > 4:
+        return {}
+    counts: dict[str, int] = {}
+    want = list(prefix_parts)
+    for rel in files:
+        if not isinstance(rel, str):
+            continue
+        norm = os.path.normpath(rel)
+        parts = norm.split(os.sep)
+        if len(parts) != 6:
+            continue
+        if k > 0 and parts[:k] != want:
+            continue
+        child = parts[k]
+        counts[child] = counts.get(child, 0) + 1
+    return counts
+
+
+def index_list_all_filenames(
+    files: dict[str, Any], prefix_parts: tuple[str, ...]
+) -> list[str]:
+    """Sorted filenames in a camera directory (prefix_parts length 5)."""
+    if len(prefix_parts) != 5:
+        return []
+    prefix = "/".join(prefix_parts) + "/"
+    out: list[str] = []
+    for rel in files:
+        if not isinstance(rel, str):
+            continue
+        if not rel.startswith(prefix):
+            continue
+        rest = rel[len(prefix) :]
+        if "/" in rest:
+            continue
+        if rest:
+            out.append(rest)
+    out.sort()
+    return out
+
+
+def scandir_child_names(output_dir: str, prefix_parts: tuple[str, ...]) -> list[str]:
+    """Immediate subdirectories for non-index or partial walk (depth 0–4)."""
+    if len(prefix_parts) > 4:
+        return []
+    base = os.path.join(output_dir, *prefix_parts)
+    if not os.path.isdir(base):
+        return []
+    depth = len(prefix_parts)
+    names: list[str] = []
+    try:
+        with os.scandir(base) as it:
+            for e in it:
+                try:
+                    if not e.is_dir(follow_symlinks=False) or e.name.startswith("."):
+                        continue
+                except OSError:
+                    continue
+                if depth == 0:
+                    names.append(e.name)
+                elif depth == 1:
+                    if e.name.isdigit() and len(e.name) == 4:
+                        names.append(e.name)
+                elif depth in (2, 3):
+                    if e.name.isdigit() and len(e.name) == 2:
+                        names.append(e.name)
+                elif depth == 4:
+                    names.append(e.name)
+    except OSError:
+        return []
+    return sorted(names)
+
+
+def scandir_list_filenames(output_dir: str, prefix_parts: tuple[str, ...]) -> list[str]:
+    """Sorted filenames under a camera directory (5 path parts)."""
+    if len(prefix_parts) != 5:
+        return []
+    base = os.path.join(output_dir, *prefix_parts)
+    if not os.path.isdir(base):
+        return []
+    names: list[str] = []
+    try:
+        with os.scandir(base) as it:
+            for e in it:
+                try:
+                    if e.is_file(follow_symlinks=False):
+                        names.append(e.name)
+                except OSError:
+                    pass
+    except OSError:
+        return []
+    names.sort()
+    return names
+
+
+def paginate_list(items: list[str], offset: int, limit: int) -> tuple[int, list[str]]:
+    """Return (total, slice). Clamps offset to valid range."""
+    total = len(items)
+    if offset < 0:
+        offset = 0
+    if limit < 1:
+        limit = 1
+    page = items[offset : offset + limit]
+    return total, page
+
+
+def build_preview_images(
+    all_filenames: list[str],
+    prefix_parts: tuple[str, ...],
+    preview_limit: int,
+) -> tuple[list[dict[str, Any]], bool, dict[str, int]]:
+    """
+    Capped list for preview navigation + filename -> index among images only.
+
+    Returns (preview_entries, truncated, image_index_by_filename).
+    """
+    images = [f for f in sorted(all_filenames) if _is_image_filename(f)]
+    index_map = {fn: i for i, fn in enumerate(images)}
+    truncated = len(images) > preview_limit
+    base = "/".join(prefix_parts)
+    preview: list[dict[str, Any]] = []
+    for fname in images[:preview_limit]:
+        preview.append(
+            {
+                "path": f"{base}/{fname}",
+                "filename": fname,
+                "index": index_map[fname],
+            }
+        )
+    return preview, truncated, index_map
