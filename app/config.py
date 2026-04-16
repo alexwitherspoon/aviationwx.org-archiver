@@ -12,9 +12,13 @@ import os
 import yaml
 
 from app.constants import (
+    DEFAULT_BROWSE_AIRPORT_LIMIT,
+    DEFAULT_FETCH_ON_START_DELAY_SECONDS,
     DEFAULT_INTERVAL_MINUTES,
     DEFAULT_LOG_DISPLAY_COUNT,
     DEFAULT_REQUEST_DELAY_SECONDS,
+    DEFAULT_SLOW_REQUEST_LOG_SECONDS,
+    DEFAULT_WAITRESS_THREADS,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,6 +32,8 @@ DEFAULT_CONFIG = {
     "schedule": {
         "interval_minutes": DEFAULT_INTERVAL_MINUTES,
         "fetch_on_start": True,
+        # Delay (s) before initial fetch_on_start so the web server can bind first.
+        "fetch_on_start_delay_seconds": DEFAULT_FETCH_ON_START_DELAY_SECONDS,
         "job_timeout_minutes": 30,
         # Unix nice increment for worker (higher = lower CPU priority). 0 = no change.
         "worker_nice": 10,
@@ -55,10 +61,15 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "port": 8080,
         "host": "0.0.0.0",
+        "waitress_threads": DEFAULT_WAITRESS_THREADS,
         "log_display_count": DEFAULT_LOG_DISPLAY_COUNT,
         # When > 0 and web enabled: archive worker yields this many seconds at
         # strategic points so the web UI gets CPU time. 0 = disabled.
         "priority_yield_seconds": 0.02,
+        # Cap top-level airport directories in browse (0 = unlimited).
+        "browse_airport_limit": DEFAULT_BROWSE_AIRPORT_LIMIT,
+        # Log slow HTTP requests at WARNING (seconds); 0 = disabled.
+        "slow_request_log_seconds": DEFAULT_SLOW_REQUEST_LOG_SECONDS,
     },
     "logging": {
         "level": "INFO",
@@ -76,6 +87,11 @@ _ENV_TO_CONFIG: list[tuple[str, tuple[str, ...], str | type]] = [
     ("ARCHIVER_ARCHIVE_RETENTION_MAX_GB", ("archive", "retention_max_gb"), "float"),
     ("ARCHIVER_SCHEDULE_INTERVAL_MINUTES", ("schedule", "interval_minutes"), int),
     ("ARCHIVER_SCHEDULE_FETCH_ON_START", ("schedule", "fetch_on_start"), bool),
+    (
+        "ARCHIVER_SCHEDULE_FETCH_ON_START_DELAY_SECONDS",
+        ("schedule", "fetch_on_start_delay_seconds"),
+        int,
+    ),
     ("ARCHIVER_SCHEDULE_JOB_TIMEOUT_MINUTES", ("schedule", "job_timeout_minutes"), int),
     ("ARCHIVER_SCHEDULE_WORKER_NICE", ("schedule", "worker_nice"), int),
     (
@@ -103,7 +119,14 @@ _ENV_TO_CONFIG: list[tuple[str, tuple[str, ...], str | type]] = [
     ("ARCHIVER_WEB_PORT", ("web", "port"), int),
     ("ARCHIVER_WEB_HOST", ("web", "host"), str),
     ("ARCHIVER_WEB_LOG_DISPLAY_COUNT", ("web", "log_display_count"), int),
+    ("ARCHIVER_WEB_WAITRESS_THREADS", ("web", "waitress_threads"), int),
     ("ARCHIVER_WEB_PRIORITY_YIELD_SECONDS", ("web", "priority_yield_seconds"), "float"),
+    ("ARCHIVER_WEB_BROWSE_AIRPORT_LIMIT", ("web", "browse_airport_limit"), int),
+    (
+        "ARCHIVER_WEB_SLOW_REQUEST_LOG_SECONDS",
+        ("web", "slow_request_log_seconds"),
+        "float",
+    ),
     ("ARCHIVER_LOGGING_LEVEL", ("logging", "level"), str),
     ("ARCHIVER_LOGGING_FILE", ("logging", "file"), str),
 ]
@@ -257,6 +280,24 @@ def validate_config(config: dict) -> list[str]:
     retention_minute = config.get("schedule", {}).get("retention_minute", 0)
     if not 0 <= retention_minute <= 59:
         errors.append("Schedule retention_minute must be 0–59.")
+
+    delay = config.get("schedule", {}).get("fetch_on_start_delay_seconds", 0)
+    if not 0 <= delay <= 3600:
+        errors.append(
+            "fetch_on_start_delay_seconds must be between 0 and 3600 (seconds)."
+        )
+
+    wt = config.get("web", {}).get("waitress_threads", DEFAULT_WAITRESS_THREADS)
+    if not 1 <= wt <= 128:
+        errors.append("web.waitress_threads must be between 1 and 128.")
+
+    bal = config.get("web", {}).get("browse_airport_limit", 0)
+    if bal < 0 or bal > 1_000_000:
+        errors.append("web.browse_airport_limit must be between 0 and 1000000.")
+
+    slow = config.get("web", {}).get("slow_request_log_seconds", 0)
+    if slow < 0 or slow > 300:
+        errors.append("web.slow_request_log_seconds must be between 0 and 300.")
 
     if errors:
         logger.debug("Config validation failed: %s", "; ".join(errors))
