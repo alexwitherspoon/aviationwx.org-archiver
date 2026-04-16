@@ -24,6 +24,11 @@ _child_counts_lock = threading.Lock()
 IMAGE_EXTENSIONS = frozenset({"jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"})
 
 
+def _browse_segment_invalid_chars(segment: str) -> bool:
+    """True if segment contains NUL or other C0 control characters."""
+    return any(ord(c) < 32 for c in segment)
+
+
 def parse_browse_path(path: str | None) -> tuple[str, ...]:
     """Parse URL path query into 0–5 path segments. Raises ValueError if invalid."""
     if not path or not str(path).strip():
@@ -31,6 +36,8 @@ def parse_browse_path(path: str | None) -> tuple[str, ...]:
     parts: list[str] = []
     for p in str(path).replace("\\", "/").strip().strip("/").split("/"):
         if not p or p in (".", ".."):
+            raise ValueError("invalid path segment")
+        if _browse_segment_invalid_chars(p):
             raise ValueError("invalid path segment")
         parts.append(p)
     if len(parts) > 5:
@@ -44,6 +51,8 @@ def safe_browse_segments(parts: tuple[str, ...]) -> bool:
         if not p or p.strip() != p:
             return False
         if ".." in p:
+            return False
+        if _browse_segment_invalid_chars(p):
             return False
     return True
 

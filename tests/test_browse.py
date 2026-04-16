@@ -40,6 +40,24 @@ def test_parse_browse_path_rejects_traversal():
         pass
 
 
+def test_parse_browse_path_rejects_nul_and_controls():
+    try:
+        parse_browse_path("KSEA\x00x")
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+    try:
+        parse_browse_path("KSEA/\x01bad")
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+
+
+def test_safe_browse_segments_rejects_control_chars():
+    assert safe_browse_segments(("KSEA\x00",)) is False
+    assert safe_browse_segments(("ab\nc",)) is False
+
+
 def test_index_child_file_counts_airport_level():
     files = {
         "KSEA/2024/01/01/cam/a.jpg": {"size": 1},

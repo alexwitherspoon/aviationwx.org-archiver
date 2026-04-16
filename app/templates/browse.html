@@ -146,6 +146,8 @@
   root.addEventListener('click', function(e) {
     const a = e.target.closest('.file-link');
     if (!a) return;
+    /* Let Ctrl/Cmd/Shift/Alt+click use the browser default (e.g. open in new tab). */
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
     const url = a.getAttribute('href');
     const filename = a.getAttribute('data-filename');
