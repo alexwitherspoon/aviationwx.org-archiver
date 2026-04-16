@@ -30,7 +30,7 @@ from flask import (
 )
 
 from app.browse import (
-    IMAGE_EXTENSIONS,
+    _is_image_filename,
     build_preview_images,
     index_child_file_counts,
     index_list_all_filenames,
@@ -212,12 +212,6 @@ def _effective_browse_preview_limit(config: dict | None) -> int:
     except (TypeError, ValueError):
         return DEFAULT_BROWSE_PREVIEW_IMAGE_LIMIT
     return max(1, min(v, 50_000))
-
-
-def _fname_is_image(fname: str) -> bool:
-    if "." not in fname:
-        return False
-    return fname.rsplit(".", 1)[-1].lower() in IMAGE_EXTENSIONS
 
 
 def _archive_tree_uncached(output_dir: str, config: dict | None = None) -> dict:
@@ -762,7 +756,7 @@ def api_browse_files():
                 "time_utc": ts if ts else "—",
                 "row": offset + i + 1,
                 "preview_slot": preview_lookup.get(fname, -1),
-                "is_image": _fname_is_image(fname),
+                "is_image": _is_image_filename(fname),
             }
         )
 
@@ -786,7 +780,6 @@ def browse():
     return render_template(
         "browse.html",
         output_dir=output_dir,
-        browse_preview_limit=_effective_browse_preview_limit(config),
         serve_archive_base=url_for("serve_archive_file", subpath=""),
     )
 

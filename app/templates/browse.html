@@ -38,7 +38,6 @@
 </div>
 
 <div id="browse-root"
-     data-preview-limit="{{ browse_preview_limit }}"
      data-archive-base="{{ serve_archive_base }}">
   <p class="empty" id="browse-loading">Loading…</p>
 </div>
@@ -104,6 +103,8 @@
       imageRow.style.display = 'none';
       img.src = '';
       nonImageEl.style.display = 'block';
+      prevBtn.disabled = true;
+      nextBtn.disabled = true;
     }
   }
 

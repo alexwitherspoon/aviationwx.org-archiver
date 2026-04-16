@@ -168,9 +168,9 @@ def build_preview_images(
     """Capped preview list for carousel; returns (preview_entries, truncated).
 
     ``all_filenames`` must already be sorted (e.g. from ``index_list_all_filenames``
-    or ``scandir_list_filenames``). Walks filenames once and stops after
-    ``preview_limit + 1`` images to detect truncation without materializing every
-    image name.
+    or ``scandir_list_filenames``). Single pass: collect up to ``preview_limit``
+    images; if another image appears later in the list, set ``truncated`` and stop
+    (no full list of image names).
     """
     base = "/".join(prefix_parts)
     preview: list[dict[str, Any]] = []
