@@ -13,7 +13,7 @@ def _pinned_requests_version() -> tuple[int, int, int]:
     text = _REQUIREMENTS.read_text(encoding="utf-8")
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].strip()
-        m = re.match(r"^requests==(\d+)\.(\d+)\.(\d+)", line)
+        m = re.fullmatch(r"requests==(\d+)\.(\d+)\.(\d+)", line)
         if m:
             return tuple(int(x) for x in m.groups())
     raise AssertionError("No requests== pin found in requirements.txt")
