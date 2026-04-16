@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -45,27 +46,33 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # TTL cache for archive tree/stats (avoids full scans on every request)
-_archive_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+# Keys: (output_dir, "stats") or (output_dir, "tree", browse_limit_int).
+_archive_cache: dict[tuple, tuple[float, dict]] = {}
+_archive_cache_lock = threading.Lock()
 _ARCHIVE_CACHE_TTL_SEC = 60
 
 
 def invalidate_archive_cache() -> None:
     """Clear cached archive tree/stats. Call after archive or retention runs."""
-    global _archive_cache
-    _archive_cache.clear()
+    with _archive_cache_lock:
+        _archive_cache.clear()
 
 
 def _maybe_invalidate_archive_cache() -> None:
     """Invalidate stats/tree cache entries when scheduler signals changes."""
     stats_d, tree_d = consume_archive_cache_dirty_flags()
-    global _archive_cache
-    if stats_d and tree_d:
-        _archive_cache.clear()
-        return
-    if stats_d:
-        _archive_cache = {k: v for k, v in _archive_cache.items() if k[1] != "stats"}
-    if tree_d:
-        _archive_cache = {k: v for k, v in _archive_cache.items() if k[1] != "tree"}
+    with _archive_cache_lock:
+        if stats_d and tree_d:
+            _archive_cache.clear()
+            return
+        if stats_d:
+            for k in list(_archive_cache.keys()):
+                if len(k) >= 2 and k[1] == "stats":
+                    del _archive_cache[k]
+        if tree_d:
+            for k in list(_archive_cache.keys()):
+                if len(k) >= 2 and k[1] == "tree":
+                    del _archive_cache[k]
 
 
 @app.before_request
@@ -138,6 +145,17 @@ def timestamp_from_filename_filter(filename: str) -> str:
     return result if result else "—"
 
 
+def _effective_browse_airport_limit(config: dict | None) -> int:
+    """Normalized browse_airport_limit for cache keys (must match uncached logic)."""
+    if not config:
+        return 0
+    try:
+        v = int((config.get("web") or {}).get("browse_airport_limit", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, v)
+
+
 def _archive_tree_uncached(output_dir: str, config: dict | None = None) -> dict:
     """
     Build a nested dict representing the archive directory tree.
@@ -149,6 +167,8 @@ def _archive_tree_uncached(output_dir: str, config: dict | None = None) -> dict:
     if not os.path.isdir(output_dir):
         return {}
 
+    limit = _effective_browse_airport_limit(config)
+
     from app.archiver import (
         _archive_tree_from_index,
         _index_entries_valid,
@@ -159,6 +179,9 @@ def _archive_tree_uncached(output_dir: str, config: dict | None = None) -> dict:
     if data and "files" in data and _index_entries_valid(output_dir, data):
         tree = _archive_tree_from_index(data, output_dir)
         if tree is not None:
+            if limit > 0:
+                keys = sorted(tree.keys())[:limit]
+                tree = {k: tree[k] for k in keys}
             return tree
 
     tree = {}
@@ -175,9 +198,6 @@ def _archive_tree_uncached(output_dir: str, config: dict | None = None) -> dict:
     except OSError:
         return tree
 
-    limit = 0
-    if config:
-        limit = int((config.get("web") or {}).get("browse_airport_limit", 0) or 0)
     if limit > 0:
         airports = airports[:limit]
 
@@ -275,14 +295,17 @@ def _archive_tree_uncached(output_dir: str, config: dict | None = None) -> dict:
 def _archive_tree(output_dir: str, config: dict | None = None) -> dict:
     """Cached wrapper for _archive_tree_uncached."""
     _maybe_invalidate_archive_cache()
-    key = (output_dir, "tree")
+    limit = _effective_browse_airport_limit(config)
+    key = (output_dir, "tree", limit)
     now = time.time()
-    if key in _archive_cache:
-        ts, data = _archive_cache[key]
-        if now - ts < _ARCHIVE_CACHE_TTL_SEC:
-            return data
+    with _archive_cache_lock:
+        if key in _archive_cache:
+            ts, data = _archive_cache[key]
+            if now - ts < _ARCHIVE_CACHE_TTL_SEC:
+                return data
     data = _archive_tree_uncached(output_dir, config)
-    _archive_cache[key] = (now, data)
+    with _archive_cache_lock:
+        _archive_cache[key] = (now, data)
     return data
 
 
@@ -433,12 +456,14 @@ def _archive_stats(output_dir: str, config: dict | None = None) -> dict:
     _maybe_invalidate_archive_cache()
     key = (output_dir, "stats")
     now = time.time()
-    if key in _archive_cache:
-        ts, data = _archive_cache[key]
-        if now - ts < _ARCHIVE_CACHE_TTL_SEC:
-            return data
+    with _archive_cache_lock:
+        if key in _archive_cache:
+            ts, data = _archive_cache[key]
+            if now - ts < _ARCHIVE_CACHE_TTL_SEC:
+                return data
     data = _archive_stats_uncached(output_dir, config)
-    _archive_cache[key] = (now, data)
+    with _archive_cache_lock:
+        _archive_cache[key] = (now, data)
     return data
 
 

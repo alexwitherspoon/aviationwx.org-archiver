@@ -230,6 +230,56 @@ def load_config(config_path: str | None = None) -> dict:
     return config
 
 
+def _coerce_int_for_validation(
+    raw: object, field: str
+) -> tuple[int | None, str | None]:
+    """
+    Parse int for validate_config. Returns (value, None) or (None, error_message).
+
+    Rejects bool (YAML sometimes coerces oddly) and non-numeric strings.
+    """
+    if raw is None:
+        return None, f"{field} must be set to an integer."
+    if isinstance(raw, bool):
+        return None, f"{field} must be a number, not a boolean."
+    if isinstance(raw, int):
+        return raw, None
+    if isinstance(raw, float):
+        return int(raw), None
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None, f"{field} cannot be empty."
+        try:
+            return int(s, 10), None
+        except ValueError:
+            return None, f"{field} must be an integer."
+    return None, f"{field} must be an integer."
+
+
+def _coerce_float_for_validation(
+    raw: object, field: str
+) -> tuple[float | None, str | None]:
+    """Parse float for validate_config; (value, None) or (None, error_message)."""
+    if raw is None:
+        return None, f"{field} must be set to a number."
+    if isinstance(raw, bool):
+        return None, f"{field} must be a number, not a boolean."
+    if isinstance(raw, int):
+        return float(raw), None
+    if isinstance(raw, float):
+        return raw, None
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None, f"{field} cannot be empty."
+        try:
+            return float(s), None
+        except ValueError:
+            return None, f"{field} must be a number."
+    return None, f"{field} must be a number."
+
+
 def validate_config(config: dict) -> list[str]:
     """
     Validate configuration for minimal operation.
@@ -281,22 +331,48 @@ def validate_config(config: dict) -> list[str]:
     if not 0 <= retention_minute <= 59:
         errors.append("Schedule retention_minute must be 0–59.")
 
-    delay = config.get("schedule", {}).get("fetch_on_start_delay_seconds", 0)
-    if not 0 <= delay <= 3600:
+    sched = config.get("schedule") or {}
+    delay_raw = sched.get("fetch_on_start_delay_seconds")
+    if delay_raw is None:
+        delay_raw = DEFAULT_FETCH_ON_START_DELAY_SECONDS
+    delay, delay_err = _coerce_int_for_validation(
+        delay_raw, "schedule.fetch_on_start_delay_seconds"
+    )
+    if delay_err:
+        errors.append(delay_err)
+    elif delay is not None and not 0 <= delay <= 3600:
         errors.append(
             "fetch_on_start_delay_seconds must be between 0 and 3600 (seconds)."
         )
 
-    wt = config.get("web", {}).get("waitress_threads", DEFAULT_WAITRESS_THREADS)
-    if not 1 <= wt <= 128:
+    web_cfg = config.get("web") or {}
+    wt_raw = web_cfg.get("waitress_threads")
+    if wt_raw is None:
+        wt_raw = DEFAULT_WAITRESS_THREADS
+    wt, wt_err = _coerce_int_for_validation(wt_raw, "web.waitress_threads")
+    if wt_err:
+        errors.append(wt_err)
+    elif wt is not None and not 1 <= wt <= 128:
         errors.append("web.waitress_threads must be between 1 and 128.")
 
-    bal = config.get("web", {}).get("browse_airport_limit", 0)
-    if bal < 0 or bal > 1_000_000:
+    bal_raw = web_cfg.get("browse_airport_limit")
+    if bal_raw is None:
+        bal_raw = DEFAULT_BROWSE_AIRPORT_LIMIT
+    bal, bal_err = _coerce_int_for_validation(bal_raw, "web.browse_airport_limit")
+    if bal_err:
+        errors.append(bal_err)
+    elif bal is not None and (bal < 0 or bal > 1_000_000):
         errors.append("web.browse_airport_limit must be between 0 and 1000000.")
 
-    slow = config.get("web", {}).get("slow_request_log_seconds", 0)
-    if slow < 0 or slow > 300:
+    slow_raw = web_cfg.get("slow_request_log_seconds")
+    if slow_raw is None:
+        slow_raw = DEFAULT_SLOW_REQUEST_LOG_SECONDS
+    slow, slow_err = _coerce_float_for_validation(
+        slow_raw, "web.slow_request_log_seconds"
+    )
+    if slow_err:
+        errors.append(slow_err)
+    elif slow is not None and (slow < 0 or slow > 300):
         errors.append("web.slow_request_log_seconds must be between 0 and 300.")
 
     if errors:

@@ -496,11 +496,15 @@ def test_append_log_respects_deque_maxlen():
     from app.scheduler import _append_log, _state, _state_lock
 
     with _state_lock:
+        previous = _state["log_entries"]
         _state["log_entries"] = deque(maxlen=5)
+    try:
+        for i in range(50):
+            _append_log(f"msg-{i}", "INFO")
 
-    for i in range(50):
-        _append_log(f"msg-{i}", "INFO")
-
-    with _state_lock:
-        assert len(_state["log_entries"]) == 5
-        assert _state["log_entries"][-1]["message"] == "msg-49"
+        with _state_lock:
+            assert len(_state["log_entries"]) == 5
+            assert _state["log_entries"][-1]["message"] == "msg-49"
+    finally:
+        with _state_lock:
+            _state["log_entries"] = previous

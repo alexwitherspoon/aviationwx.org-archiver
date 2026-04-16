@@ -313,6 +313,38 @@ def test_validate_config_rejects_invalid_retention_minute():
     assert any("retention_minute" in e for e in errors)
 
 
+def test_validate_config_accepts_string_numbers_for_web_and_schedule_fields():
+    """Quoted numeric YAML values coerce to int/float for new validation fields."""
+    from app.config import validate_config
+
+    config = {
+        "archive": {"output_dir": "/archive"},
+        "source": {"airports_api_url": "https://api.example.com/airports"},
+        "airports": {"archive_all": True, "selected": []},
+        "schedule": {"fetch_on_start_delay_seconds": "60"},
+        "web": {
+            "waitress_threads": "8",
+            "browse_airport_limit": "100",
+            "slow_request_log_seconds": "1.5",
+        },
+    }
+    assert validate_config(config) == []
+
+
+def test_validate_config_rejects_boolean_for_waitress_threads():
+    """YAML booleans must not be accepted as numeric fields."""
+    from app.config import validate_config
+
+    config = {
+        "archive": {"output_dir": "/archive"},
+        "source": {"airports_api_url": "https://api.example.com/airports"},
+        "airports": {"archive_all": True, "selected": []},
+        "web": {"waitress_threads": True},
+    }
+    errors = validate_config(config)
+    assert any("boolean" in e.lower() for e in errors)
+
+
 # ---------------------------------------------------------------------------
 # Airport selection tests
 # ---------------------------------------------------------------------------
