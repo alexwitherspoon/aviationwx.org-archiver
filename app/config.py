@@ -13,6 +13,8 @@ import yaml
 
 from app.constants import (
     DEFAULT_BROWSE_AIRPORT_LIMIT,
+    DEFAULT_BROWSE_PAGE_SIZE,
+    DEFAULT_BROWSE_PREVIEW_IMAGE_LIMIT,
     DEFAULT_FETCH_ON_START_DELAY_SECONDS,
     DEFAULT_INTERVAL_MINUTES,
     DEFAULT_LOG_DISPLAY_COUNT,
@@ -68,6 +70,10 @@ DEFAULT_CONFIG = {
         "priority_yield_seconds": 0.02,
         # Cap top-level airport directories in browse (0 = unlimited).
         "browse_airport_limit": DEFAULT_BROWSE_AIRPORT_LIMIT,
+        # Paginated file table: rows per request (lazy browse API).
+        "browse_page_size": DEFAULT_BROWSE_PAGE_SIZE,
+        # Preview prev/next carousel: max image entries (full archives may have more).
+        "browse_preview_image_limit": DEFAULT_BROWSE_PREVIEW_IMAGE_LIMIT,
         # Log slow HTTP requests at WARNING (seconds); 0 = disabled.
         "slow_request_log_seconds": DEFAULT_SLOW_REQUEST_LOG_SECONDS,
     },
@@ -122,6 +128,12 @@ _ENV_TO_CONFIG: list[tuple[str, tuple[str, ...], str | type]] = [
     ("ARCHIVER_WEB_WAITRESS_THREADS", ("web", "waitress_threads"), int),
     ("ARCHIVER_WEB_PRIORITY_YIELD_SECONDS", ("web", "priority_yield_seconds"), "float"),
     ("ARCHIVER_WEB_BROWSE_AIRPORT_LIMIT", ("web", "browse_airport_limit"), int),
+    ("ARCHIVER_WEB_BROWSE_PAGE_SIZE", ("web", "browse_page_size"), int),
+    (
+        "ARCHIVER_WEB_BROWSE_PREVIEW_IMAGE_LIMIT",
+        ("web", "browse_preview_image_limit"),
+        int,
+    ),
     (
         "ARCHIVER_WEB_SLOW_REQUEST_LOG_SECONDS",
         ("web", "slow_request_log_seconds"),
@@ -366,6 +378,24 @@ def validate_config(config: dict) -> list[str]:
         errors.append(bal_err)
     elif bal is not None and (bal < 0 or bal > 1_000_000):
         errors.append("web.browse_airport_limit must be between 0 and 1000000.")
+
+    bps_raw = web_cfg.get("browse_page_size")
+    if bps_raw is None:
+        bps_raw = DEFAULT_BROWSE_PAGE_SIZE
+    bps, bps_err = _coerce_int_for_validation(bps_raw, "web.browse_page_size")
+    if bps_err:
+        errors.append(bps_err)
+    elif bps is not None and not 1 <= bps <= 10_000:
+        errors.append("web.browse_page_size must be between 1 and 10000.")
+
+    bpl_raw = web_cfg.get("browse_preview_image_limit")
+    if bpl_raw is None:
+        bpl_raw = DEFAULT_BROWSE_PREVIEW_IMAGE_LIMIT
+    bpl, bpl_err = _coerce_int_for_validation(bpl_raw, "web.browse_preview_image_limit")
+    if bpl_err:
+        errors.append(bpl_err)
+    elif bpl is not None and not 1 <= bpl <= 50_000:
+        errors.append("web.browse_preview_image_limit must be between 1 and 50000.")
 
     slow_raw = web_cfg.get("slow_request_log_seconds")
     if slow_raw is None:

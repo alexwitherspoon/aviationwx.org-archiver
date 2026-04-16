@@ -62,6 +62,10 @@ DEFAULT_WAITRESS_THREADS = 6
 DEFAULT_FETCH_ON_START_DELAY_SECONDS = 0
 # Browse page: max airport top-level dirs (0 = unlimited)
 DEFAULT_BROWSE_AIRPORT_LIMIT = 0
+# Lazy browse: max files per /api/browse/files page
+DEFAULT_BROWSE_PAGE_SIZE = 100
+# Max image entries returned for preview prev/next (full list can be larger)
+DEFAULT_BROWSE_PREVIEW_IMAGE_LIMIT = 500
 # Log WARNING when a request exceeds this duration (seconds); 0 = disabled
 DEFAULT_SLOW_REQUEST_LOG_SECONDS = 2.0
 

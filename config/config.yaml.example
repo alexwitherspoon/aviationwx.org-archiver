@@ -99,6 +99,15 @@ web:
   # the web UI stays responsive during runs. 0 = disabled. Default 0.02.
   # priority_yield_seconds: 0.02
 
+  # Browse: max top-level airport directories (0 = unlimited).
+  # browse_airport_limit: 0
+
+  # Browse file table: rows per page (lazy load / load more). Default 100.
+  # browse_page_size: 100
+
+  # Browse preview carousel: max image entries for prev/next. Default 500.
+  # browse_preview_image_limit: 500
+
 # ============================================================
 # Logging
 # ============================================================

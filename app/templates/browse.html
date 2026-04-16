@@ -3,13 +3,16 @@
 
 {% block content %}
 <h1>Browse Archive</h1>
-<p class="subtitle">Explore archived images organised by airport / year / month / day / camera</p>
+<p class="subtitle">Explore archived images by airport / date / camera. Open folders to load contents.</p>
 
 <style>
-  .file-link { color: var(--accent); text-decoration: none; }
+  .file-link { color: var(--accent); text-decoration: none; cursor: pointer; }
   .file-link:hover { text-decoration: underline; }
   .preview-nav-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .browse-load-more { margin-top: 8px; }
+  .browse-sentinel { height: 1px; }
 </style>
+
 <div id="preview-panel" class="card" style="display:none; margin-bottom:24px;" tabindex="-1">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:12px;">
     <div>
@@ -25,6 +28,7 @@
       <a id="preview-download-btn" href="" download="" class="btn primary" style="display:inline-block; padding:8px 16px; text-decoration:none; font-size:13px; font-weight:500;">Download</a>
     </div>
   </div>
+  <p id="preview-truncated" style="display:none; color:var(--text-muted); font-size:12px; margin-bottom:8px;"></p>
   <div id="preview-image-row" style="display:none;">
     <img id="preview-image" src="" alt="Preview" style="max-width:100%; max-height:70vh; display:block; border-radius:4px;">
   </div>
@@ -33,110 +37,44 @@
   </p>
 </div>
 
-{% if not tree %}
-  <div class="card">
-    <p class="empty">No archived images found yet. Run the archiver from the <a href="{{ url_for('dashboard') }}">Dashboard</a> to get started.</p>
-  </div>
-{% else %}
-  {% for airport, years in tree.items() %}
-  <details>
-    <summary class="card" style="margin-bottom:4px; font-weight:600; font-size:15px;">✈ {{ airport }}</summary>
-    {% for year, months in years.items() %}
-    <details style="margin-left:16px;">
-      <summary class="card" style="margin-bottom:4px; font-weight:500;">
-        {{ year }}
-        <span class="badge badge-info" style="margin-left:8px">
-          {% set ns = namespace(count=0) %}
-          {% for month_data in months.values() %}
-          {% for day_data in month_data.values() %}
-          {% for camera, files in day_data.items() %}
-          {% set ns.count = ns.count + (files|length) %}
-          {% endfor %}
-          {% endfor %}
-          {% endfor %}
-          {{ ns.count }} file(s)
-        </span>
-      </summary>
-      {% for month, days in months.items() %}
-      <details style="margin-left:16px;">
-      <summary class="card" style="margin-bottom:4px;">
-        {{ year }}-{{ month }}
-      </summary>
-        {% for day, cameras in days.items() %}
-        {% for camera, files in cameras.items() %}
-        <div class="card" style="margin-left:16px; margin-bottom:8px;">
-          <h2>{{ airport }} &mdash; {{ camera }} &mdash; {{ year }}-{{ month }}-{{ day }}</h2>
-          {% if files %}
-            <div style="overflow-x:auto;">
-              <table style="width:100%; border-collapse:collapse; font-size:12px; font-family:monospace;">
-                <thead>
-                  <tr style="border-bottom:1px solid var(--border); text-align:left; color:var(--text-muted);">
-                    <th style="padding:4px 8px;">#</th>
-                    <th style="padding:4px 8px;">Time (UTC)</th>
-                    <th style="padding:4px 8px;">Filename</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {% set image_exts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'] %}
-                  {% set ns = namespace(images=[]) %}
-                  {% for fname in files %}
-                    {% set ext = fname.split('.')|last|lower %}
-                    {% if ext in image_exts %}
-                      {% set _ = ns.images.append({'path': airport ~ '/' ~ year ~ '/' ~ month ~ '/' ~ day ~ '/' ~ camera ~ '/' ~ fname, 'filename': fname, 'index': ns.images|length}) %}
-                    {% endif %}
-                  {% endfor %}
-                  {% for fname in files %}
-                  <tr style="border-bottom:1px solid var(--border);" class="file-row">
-                    <td style="padding:4px 8px; color:var(--text-muted);">{{ loop.index }}</td>
-                    <td style="padding:4px 8px; color:var(--text-muted); font-size:11px;">{{ fname|timestamp_from_filename }}</td>
-                    <td style="padding:4px 8px;">
-                      {% set ext = fname.split('.')|last|lower %}
-                      {% set img_entry = ns.images|selectattr('filename', 'equalto', fname)|first %}
-                      {% set img_index = img_entry.index if img_entry else -1 %}
-                      <a href="{{ url_for('serve_archive_file', subpath=airport ~ '/' ~ year ~ '/' ~ month ~ '/' ~ day ~ '/' ~ camera ~ '/' ~ fname) }}"
-                         class="file-link"
-                         data-path="{{ airport }}/{{ year }}/{{ month }}/{{ day }}/{{ camera }}/{{ fname }}"
-                         data-filename="{{ fname }}"
-                         data-siblings='{{ ns.images|tojson }}'
-                         data-index="{{ img_index }}">
-                        {{ fname }}
-                      </a>
-                    </td>
-                  </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-          {% else %}
-            <p class="empty">No files.</p>
-          {% endif %}
-        </div>
-        {% endfor %}
-        {% endfor %}
-      </details>
-      {% endfor %}
-    </details>
-    {% endfor %}
-  </details>
-  {% endfor %}
-{% endif %}
+<div id="browse-root"
+     data-archive-base="{{ serve_archive_base }}">
+  <p class="empty" id="browse-loading">Loading…</p>
+</div>
 
 <script>
 (function() {
+  const root = document.getElementById('browse-root');
+  const loadingEl = document.getElementById('browse-loading');
+  let archiveBase = root.getAttribute('data-archive-base') || '';
+  if (archiveBase && !archiveBase.endsWith('/')) archiveBase += '/';
+
   const panel = document.getElementById('preview-panel');
   const imageRow = document.getElementById('preview-image-row');
   const img = document.getElementById('preview-image');
   const filenameEl = document.getElementById('preview-filename');
   const timestampEl = document.getElementById('preview-timestamp');
   const nonImageEl = document.getElementById('preview-non-image');
+  const truncatedEl = document.getElementById('preview-truncated');
   const downloadBtn = document.getElementById('preview-download-btn');
   const prevBtn = document.getElementById('prev-btn');
   const nextBtn = document.getElementById('next-btn');
 
+  const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'];
   let siblings = [];
   let currentIndex = -1;
-  let basePath = "{{ url_for('serve_archive_file', subpath='') }}";
-  if (basePath && !basePath.endsWith('/')) basePath += '/';
+
+  /** Last path segment after final dot; empty if no extension (matches Python rsplit). */
+  function fileExtensionLower(name) {
+    if (!name) return '';
+    const i = name.lastIndexOf('.');
+    if (i <= 0 || i === name.length - 1) return '';
+    return name.slice(i + 1).toLowerCase();
+  }
+
+  function archiveUrl(relPath) {
+    return archiveBase + relPath.split('/').map(encodeURIComponent).join('/');
+  }
 
   function parseTimestampFromFilename(filename) {
     const base = filename.replace(/\.[^.]+$/, '');
@@ -148,9 +86,9 @@
         return d.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
       }
       if (/^\d{8}$/.test(first) && /^\d{6}$/.test(parts[1])) {
-        const y = first.slice(0, 4), m = first.slice(4, 6), d = first.slice(6, 8);
+        const y = first.slice(0, 4), m = first.slice(4, 6), day = first.slice(6, 8);
         const h = parts[1].slice(0, 2), min = parts[1].slice(2, 4), s = parts[1].slice(4, 6);
-        return y + '-' + m + '-' + d + ' ' + h + ':' + min + ':' + s + ' UTC';
+        return y + '-' + m + '-' + day + ' ' + h + ':' + min + ':' + s + ' UTC';
       }
     }
     return null;
@@ -159,7 +97,7 @@
   function showImage(url, filename, isImage) {
     filenameEl.textContent = filename;
     const ts = parseTimestampFromFilename(filename);
-    timestampEl.textContent = ts ? ts : '';
+    timestampEl.textContent = ts || '';
     timestampEl.style.display = ts ? 'inline' : 'none';
     downloadBtn.href = url;
     downloadBtn.download = filename;
@@ -173,6 +111,8 @@
       imageRow.style.display = 'none';
       img.src = '';
       nonImageEl.style.display = 'block';
+      prevBtn.disabled = true;
+      nextBtn.disabled = true;
     }
   }
 
@@ -180,11 +120,10 @@
     if (idx < 0 || idx >= siblings.length) return;
     currentIndex = idx;
     const s = siblings[idx];
-    const url = basePath + s.path;
-    showImage(url, s.filename, true);
+    showImage(archiveUrl(s.path), s.filename, true);
   }
 
-  function handleKeydown(e) {
+  document.addEventListener('keydown', function(e) {
     if (!panel || getComputedStyle(panel).display === 'none') return;
     if (siblings.length <= 1) return;
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
@@ -195,9 +134,7 @@
       e.preventDefault();
       if (currentIndex < siblings.length - 1) goToIndex(currentIndex + 1);
     }
-  }
-
-  document.addEventListener('keydown', handleKeydown, true);
+  }, true);
 
   prevBtn.addEventListener('click', function() {
     if (currentIndex > 0) goToIndex(currentIndex - 1);
@@ -206,34 +143,344 @@
     if (currentIndex < siblings.length - 1) goToIndex(currentIndex + 1);
   });
 
-  document.querySelectorAll('.file-link').forEach(function(link) {
-    link.addEventListener('click', function(e) {
-      e.preventDefault();
-      const url = this.getAttribute('href');
-      const filename = this.getAttribute('data-filename');
-      const ext = filename.split('.').pop().toLowerCase();
-      const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'];
-
-      try {
-        siblings = JSON.parse(this.getAttribute('data-siblings') || '[]');
-        currentIndex = parseInt(this.getAttribute('data-index'), 10);
-        if (isNaN(currentIndex) || currentIndex < 0) {
-          currentIndex = siblings.length > 0 ? 0 : -1;
-        } else if (currentIndex >= siblings.length) {
-          currentIndex = Math.max(0, siblings.length - 1);
-        }
-      } catch (_) {
-        siblings = [];
+  root.addEventListener('click', function(e) {
+    const a = e.target.closest('.file-link');
+    if (!a) return;
+    /* Let Ctrl/Cmd/Shift/Alt+click use the browser default (e.g. open in new tab). */
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    const url = a.getAttribute('href');
+    const filename = a.getAttribute('data-filename');
+    const ext = fileExtensionLower(filename);
+    const isImg = ext !== '' && IMAGE_EXTS.includes(ext);
+    const tableHost = a.closest('.browse-file-table-host');
+    let previewJsonText = '[]';
+    let trunc = false;
+    if (tableHost) {
+      const scr = tableHost.querySelector('script.browse-preview-json');
+      if (scr && scr.textContent) previewJsonText = scr.textContent;
+      trunc = tableHost.getAttribute('data-preview-truncated') === '1';
+    }
+    try {
+      siblings = JSON.parse(previewJsonText || '[]');
+      const previewSlot = parseInt(a.getAttribute('data-preview-slot'), 10);
+      if (isNaN(previewSlot) || previewSlot < 0) {
         currentIndex = -1;
+        siblings = [];
+      } else {
+        currentIndex = previewSlot;
       }
-
-      panel.style.display = 'block';
-      showImage(url, filename, imageExts.includes(ext));
-
-      panel.focus();
-      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
+    } catch (_) {
+      siblings = [];
+      currentIndex = -1;
+    }
+    if (currentIndex < 0) {
+      truncatedEl.style.display = isImg ? 'block' : 'none';
+      truncatedEl.textContent = isImg
+        ? 'Preview navigation is not available for this file.'
+        : '';
+    } else {
+      truncatedEl.style.display = trunc ? 'block' : 'none';
+      truncatedEl.textContent = trunc
+        ? 'Preview navigation is limited to the first images in this folder (see configuration).'
+        : '';
+    }
+    panel.style.display = 'block';
+    showImage(url, filename, isImg);
+    panel.focus();
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
+
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = text;
+    return n;
+  }
+
+  function fmtCount(n) {
+    if (n === null || n === undefined) return '';
+    return String(n) + ' file(s)';
+  }
+
+  function summaryLabel(path, level, itemName) {
+    if (level === 'months' && path) {
+      const p = path.split('/');
+      if (p.length >= 2) return p[1] + '-' + itemName;
+    }
+    if (level === 'days' && path) {
+      const p = path.split('/');
+      if (p.length >= 3) return p[1] + '-' + p[2] + '-' + itemName;
+    }
+    return itemName;
+  }
+
+  function fetchChildren(path) {
+    const q = path ? '?path=' + encodeURIComponent(path) : '';
+    return fetch('/api/browse/children' + q).then(function(r) {
+      if (!r.ok) throw new Error('browse children failed');
+      return r.json();
+    });
+  }
+
+  function fetchFiles(path, offset) {
+    const q = '?path=' + encodeURIComponent(path) + '&offset=' + String(offset);
+    return fetch('/api/browse/files' + q).then(function(r) {
+      if (!r.ok) throw new Error('browse files failed');
+      return r.json();
+    });
+  }
+
+  function attachFileTable(host, path, firstPage) {
+    const wrap = el('div', 'card browse-file-table-host');
+    wrap.style.marginLeft = '16px';
+    wrap.style.marginBottom = '8px';
+    const title = el('h2');
+    title.textContent = path.replace(/\//g, ' — ');
+    wrap.appendChild(title);
+
+    const previewJson = JSON.stringify(firstPage.preview_images || []);
+    const previewTrunc = firstPage.preview_truncated ? '1' : '0';
+    wrap.setAttribute('data-preview-truncated', previewTrunc);
+    const jsonScript = document.createElement('script');
+    jsonScript.type = 'application/json';
+    jsonScript.className = 'browse-preview-json';
+    jsonScript.textContent = previewJson;
+    wrap.appendChild(jsonScript);
+
+    const tableWrap = el('div');
+    tableWrap.style.overflowX = 'auto';
+    const table = el('table');
+    table.style.width = '100%';
+    table.style.borderCollapse = 'collapse';
+    table.style.fontSize = '12px';
+    table.style.fontFamily = 'monospace';
+    const thead = el('thead');
+    const hr = el('tr');
+    hr.style.borderBottom = '1px solid var(--border)';
+    hr.style.textAlign = 'left';
+    hr.style.color = 'var(--text-muted)';
+    ['#', 'Time (UTC)', 'Filename'].forEach(function(h) {
+      const th = el('th');
+      th.style.padding = '4px 8px';
+      th.textContent = h;
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    const tbody = el('tbody');
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    wrap.appendChild(tableWrap);
+
+    let fileTotal = firstPage.total;
+
+    function appendRows(d) {
+      d.files.forEach(function(row) {
+        const tr = el('tr', 'file-row');
+        tr.style.borderBottom = '1px solid var(--border)';
+        const td1 = el('td');
+        td1.style.padding = '4px 8px';
+        td1.style.color = 'var(--text-muted)';
+        td1.textContent = String(row.row);
+        const td2 = el('td');
+        td2.style.padding = '4px 8px';
+        td2.style.color = 'var(--text-muted)';
+        td2.style.fontSize = '11px';
+        td2.textContent = row.time_utc || '—';
+        const td3 = el('td');
+        td3.style.padding = '4px 8px';
+        const rel = path + '/' + row.name;
+        const a = el('a', 'file-link', row.name);
+        a.setAttribute('href', archiveUrl(rel));
+        a.setAttribute('data-filename', row.name);
+        a.setAttribute('data-preview-slot', String(row.preview_slot));
+        td3.appendChild(a);
+        tr.appendChild(td1);
+        tr.appendChild(td2);
+        tr.appendChild(td3);
+        tbody.appendChild(tr);
+      });
+    }
+
+    appendRows(firstPage);
+
+    const footer = el('div');
+    footer.style.marginTop = '8px';
+    const info = el('p');
+    info.style.fontSize = '12px';
+    info.style.color = 'var(--text-muted)';
+    let shown = firstPage.files.length;
+    info.textContent = 'Showing ' + shown + ' of ' + fileTotal;
+    footer.appendChild(info);
+
+    let nextOffset = firstPage.offset + firstPage.files.length;
+    const btn = el('button', 'btn primary browse-load-more', 'Load more');
+    btn.type = 'button';
+    btn.style.display = nextOffset < fileTotal ? 'inline-block' : 'none';
+
+    let loadingMore = false;
+    let io = null;
+
+    function loadNextPage() {
+      if (loadingMore) return;
+      if (nextOffset >= fileTotal) return;
+      loadingMore = true;
+      btn.disabled = true;
+      fetchFiles(path, nextOffset).then(function(d) {
+        appendRows(d);
+        shown += d.files.length;
+        fileTotal = d.total;
+        info.textContent = 'Showing ' + shown + ' of ' + fileTotal;
+        nextOffset = d.offset + d.files.length;
+        loadingMore = false;
+        btn.disabled = false;
+        if (nextOffset >= fileTotal) {
+          btn.style.display = 'none';
+          if (io) io.disconnect();
+        }
+      }).catch(function() {
+        loadingMore = false;
+        btn.disabled = false;
+      });
+    }
+
+    btn.addEventListener('click', loadNextPage);
+
+    const sentinel = el('div', 'browse-sentinel');
+    footer.appendChild(sentinel);
+    footer.appendChild(btn);
+    wrap.appendChild(footer);
+
+    if ('IntersectionObserver' in window && nextOffset < fileTotal) {
+      io = new IntersectionObserver(function(entries) {
+        entries.forEach(function(entry) {
+          if (entry.isIntersecting && btn.style.display !== 'none' && !loadingMore
+              && nextOffset < fileTotal) {
+            loadNextPage();
+          }
+        });
+      }, { root: null, rootMargin: '400px', threshold: 0 });
+      io.observe(sentinel);
+    }
+
+    host.innerHTML = '';
+    host.appendChild(wrap);
+  }
+
+  function loadFilesPanel(host, path) {
+    fetchFiles(path, 0).then(function(data) {
+      if (data.archive_unavailable) {
+        host.appendChild(el('p', 'empty',
+          'Archive directory is not available. Check configuration (output directory).'));
+        return;
+      }
+      attachFileTable(host, path, data);
+    }).catch(function() {
+      host.appendChild(el('p', 'empty', 'Failed to load files.'));
+    });
+  }
+
+  function loadNested(parentDetails, path) {
+    fetchChildren(path).then(function(data) {
+      if (data.archive_unavailable) {
+        parentDetails.appendChild(el('p', 'empty',
+          'Archive directory is not available. Check configuration (output directory).'));
+        return;
+      }
+      if (data.items.length === 0) {
+        parentDetails.appendChild(el('p', 'empty', 'No subfolders.'));
+        return;
+      }
+      const level = data.level;
+      const container = el('div');
+      data.items.forEach(function(item) {
+        const childPath = path ? path + '/' + item.name : item.name;
+        const det = el('details');
+        det.style.marginLeft = '16px';
+        const sum = el('summary', 'card');
+        sum.style.marginBottom = '4px';
+        sum.style.fontWeight = level === 'airports' ? '600' : '500';
+        if (level === 'airports') sum.style.fontSize = '15px';
+        const lab = level === 'airports'
+          ? ('✈ ' + item.name)
+          : summaryLabel(path, level, item.name);
+        sum.textContent = lab;
+        if (item.file_count !== null && item.file_count !== undefined) {
+          const badge = el('span', 'badge badge-info');
+          badge.style.marginLeft = '8px';
+          badge.textContent = fmtCount(item.file_count);
+          sum.appendChild(badge);
+        }
+        det.appendChild(sum);
+        if (level === 'cameras') {
+          const host = el('div');
+          det.appendChild(host);
+          det.addEventListener('toggle', function() {
+            if (!det.open || det.dataset.loaded) return;
+            det.dataset.loaded = '1';
+            loadFilesPanel(host, childPath);
+          });
+        } else {
+          det.addEventListener('toggle', function() {
+            if (!det.open || det.dataset.loaded) return;
+            det.dataset.loaded = '1';
+            loadNested(det, childPath);
+          });
+        }
+        container.appendChild(det);
+      });
+      parentDetails.appendChild(container);
+    }).catch(function() {
+      parentDetails.appendChild(el('p', 'empty', 'Failed to load folder.'));
+    });
+  }
+
+  function loadRoot() {
+    fetchChildren('').then(function(data) {
+      if (loadingEl) loadingEl.remove();
+      if (data.archive_unavailable) {
+        const card = el('div', 'card');
+        card.appendChild(el('p', 'empty',
+          'Archive directory is not available. Check configuration (output directory).'));
+        root.appendChild(card);
+        return;
+      }
+      if (data.items.length === 0) {
+        const card = el('div', 'card');
+        card.appendChild(el('p', 'empty',
+          'No archived images found yet. Run the archiver from the Dashboard.'));
+        root.appendChild(card);
+        return;
+      }
+      data.items.forEach(function(item) {
+        const det = el('details');
+        const sum = el('summary', 'card');
+        sum.style.marginBottom = '4px';
+        sum.style.fontWeight = '600';
+        sum.style.fontSize = '15px';
+        sum.textContent = '✈ ' + item.name;
+        if (item.file_count !== null && item.file_count !== undefined) {
+          const badge = el('span', 'badge badge-info');
+          badge.style.marginLeft = '8px';
+          badge.textContent = fmtCount(item.file_count);
+          sum.appendChild(badge);
+        }
+        det.appendChild(sum);
+        const path = item.name;
+        det.addEventListener('toggle', function() {
+          if (!det.open || det.dataset.loaded) return;
+          det.dataset.loaded = '1';
+          loadNested(det, path);
+        });
+        root.appendChild(det);
+      });
+    }).catch(function() {
+      if (loadingEl) loadingEl.textContent = 'Failed to load browse data.';
+    });
+  }
+
+  loadRoot();
 })();
 </script>
 {% endblock %}

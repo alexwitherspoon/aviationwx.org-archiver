@@ -598,14 +598,14 @@ def test_trigger_archive_redirects_to_config_when_invalid(flask_client):
 
 
 def test_browse_includes_tree_and_output_dir(flask_client):
-    """GET /browse returns 200 with tree and output_dir in template context."""
+    """GET /browse returns 200 with browse shell (lazy-loaded tree)."""
     resp = flask_client.get("/browse")
     assert resp.status_code == 200
     assert b"Browse" in resp.data or b"browse" in resp.data.lower()
 
 
 def test_browse_includes_preview_and_clickable_files(flask_client):
-    """Browse page has preview panel, download button, and file links."""
+    """Browse shell has preview panel; file list comes from browse files API."""
     config = flask_app.config["ARCHIVER_CONFIG"]
     orig_dir = config["archive"]["output_dir"]
     try:
@@ -618,24 +618,25 @@ def test_browse_includes_preview_and_clickable_files(flask_client):
             flask_app.config["ARCHIVER_CONFIG"] = config
 
             resp = flask_client.get("/browse")
+            api = flask_client.get(
+                "/api/browse/files?path=KSPB/2024/06/15/north_runway"
+            )
 
         assert resp.status_code == 200
         assert b"preview-panel" in resp.data
-        assert b"file-link" in resp.data
+        assert b"browse-root" in resp.data
         assert b"preview-download-btn" in resp.data
-        assert b"preview-nav" in resp.data
         assert b"prev-btn" in resp.data
         assert b"next-btn" in resp.data
-        assert b"/archive/KSPB/2024/06/15/north_runway/image.jpg" in resp.data
+        assert api.status_code == 200
+        rows = api.get_json()["files"]
+        assert any(r["name"] == "image.jpg" for r in rows)
     finally:
         config["archive"]["output_dir"] = orig_dir
 
 
-def test_browse_multiple_images_has_valid_data_siblings(flask_client):
-    """Browse page with multiple images has parseable data-siblings JSON."""
-    import json
-    import re
-
+def test_browse_files_api_preview_images_metadata(flask_client):
+    """Browse files API returns preview_images entries with path and index."""
     config = flask_app.config["ARCHIVER_CONFIG"]
     orig_dir = config["archive"]["output_dir"]
     try:
@@ -648,21 +649,21 @@ def test_browse_multiple_images_has_valid_data_siblings(flask_client):
             config["archive"]["output_dir"] = tmpdir
             flask_app.config["ARCHIVER_CONFIG"] = config
 
-            resp = flask_client.get("/browse")
+            api = flask_client.get(
+                "/api/browse/files?path=KSPB/2024/06/15/north_runway"
+            )
 
-        assert resp.status_code == 200
-        match = re.search(rb"data-siblings=\'([^\']+)\'", resp.data)
-        assert match, "data-siblings attribute not found"
-        siblings_json = match.group(1).decode("utf-8")
-        siblings = json.loads(siblings_json)
-        assert len(siblings) == 3
-        assert all("path" in s and "filename" in s and "index" in s for s in siblings)
+        assert api.status_code == 200
+        data = api.get_json()
+        prev = data["preview_images"]
+        assert len(prev) == 3
+        assert all("path" in s and "filename" in s and "index" in s for s in prev)
     finally:
         config["archive"]["output_dir"] = orig_dir
 
 
 def test_browse_includes_time_utc_column(flask_client):
-    """Browse page table has Time (UTC) column header."""
+    """Browse page script builds tables with Time (UTC) column; API returns times."""
     config = flask_app.config["ARCHIVER_CONFIG"]
     orig_dir = config["archive"]["output_dir"]
     try:
@@ -675,9 +676,15 @@ def test_browse_includes_time_utc_column(flask_client):
             flask_app.config["ARCHIVER_CONFIG"] = config
 
             resp = flask_client.get("/browse")
+            api = flask_client.get(
+                "/api/browse/files?path=KSPB/2024/06/15/north_runway"
+            )
 
         assert resp.status_code == 200
         assert b"Time (UTC)" in resp.data
+        assert api.status_code == 200
+        rows = api.get_json()["files"]
+        assert rows and "UTC" in rows[0].get("time_utc", "")
     finally:
         config["archive"]["output_dir"] = orig_dir
 
@@ -883,3 +890,129 @@ def test_api_status_includes_disk_usage_when_available(flask_client):
     assert "total_fmt" in du
     assert "unit" in du
     assert du["unit"] in ("GB", "TB", "PB")
+
+
+# ---------------------------------------------------------------------------
+# Browse API (lazy tree)
+# ---------------------------------------------------------------------------
+
+
+def test_api_browse_children_lists_airports(flask_client):
+    """GET /api/browse/children returns airports from archive layout."""
+    config = flask_app.config["ARCHIVER_CONFIG"]
+    orig = config["archive"]["output_dir"]
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cam = os.path.join(tmpdir, "KSEA", "2024", "01", "01", "north")
+            os.makedirs(cam, exist_ok=True)
+            with open(os.path.join(cam, "a.jpg"), "wb") as fh:
+                fh.write(b"x")
+            config["archive"]["output_dir"] = tmpdir
+            flask_app.config["ARCHIVER_CONFIG"] = config
+
+            resp = flask_client.get("/api/browse/children")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["level"] == "airports"
+        assert data.get("archive_unavailable") is False
+        assert any(x["name"] == "KSEA" for x in data["items"])
+        assert (
+            data["items"][0]["file_count"] is None
+            or data["items"][0]["file_count"] >= 1
+        )
+    finally:
+        config["archive"]["output_dir"] = orig
+        flask_app.config["ARCHIVER_CONFIG"] = config
+
+
+def test_api_browse_files_paginates(flask_client):
+    """GET /api/browse/files returns paginated rows and preview metadata."""
+    config = flask_app.config["ARCHIVER_CONFIG"]
+    orig = config["archive"]["output_dir"]
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cam = os.path.join(tmpdir, "KSEA", "2024", "01", "01", "north")
+            os.makedirs(cam, exist_ok=True)
+            for i in range(5):
+                with open(os.path.join(cam, f"{i}.jpg"), "wb") as fh:
+                    fh.write(b"x")
+            config["archive"]["output_dir"] = tmpdir
+            config["web"]["browse_page_size"] = 2
+            flask_app.config["ARCHIVER_CONFIG"] = config
+
+            r0 = flask_client.get("/api/browse/files?path=" + "KSEA/2024/01/01/north")
+            r1 = flask_client.get(
+                "/api/browse/files?path=" + "KSEA/2024/01/01/north&offset=2"
+            )
+        assert r0.status_code == 200
+        d0 = r0.get_json()
+        assert d0["total"] == 5
+        assert len(d0["files"]) == 2
+        assert d0["offset"] == 0
+        d1 = r1.get_json()
+        assert len(d1["files"]) == 2
+        assert d1["offset"] == 2
+        assert len(d1["preview_images"]) >= 1
+        assert d0.get("archive_unavailable") is False
+        assert d1.get("archive_unavailable") is False
+    finally:
+        config["archive"]["output_dir"] = orig
+        config["web"].pop("browse_page_size", None)
+        flask_app.config["ARCHIVER_CONFIG"] = config
+
+
+def test_api_browse_files_rejects_short_path(flask_client):
+    """GET /api/browse/files returns 400 when path is not five segments."""
+    resp = flask_client.get("/api/browse/files?path=KSEA/2024")
+    assert resp.status_code == 400
+
+
+def test_api_browse_children_rejects_bad_path(flask_client):
+    """GET /api/browse/children returns 400 for traversal-like path."""
+    resp = flask_client.get("/api/browse/children?path=x/../y")
+    assert resp.status_code == 400
+
+
+def test_api_browse_children_rejects_five_segment_path(flask_client):
+    """GET /api/browse/children returns 400 at camera depth (use /api/browse/files)."""
+    resp = flask_client.get("/api/browse/children?path=KSEA/2024/01/01/north")
+    assert resp.status_code == 400
+    assert "error" in resp.get_json()
+
+
+def test_api_browse_rejects_path_too_deep(flask_client):
+    """More than five path segments: 400 with a stable error message (not str(exc))."""
+    resp = flask_client.get("/api/browse/children?path=a/b/c/d/e/extra")
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert "error" in data
+    assert "too many segments" in data["error"].lower()
+
+
+def test_api_browse_archive_unavailable_when_output_dir_missing(flask_client):
+    """Browse APIs set archive_unavailable when configured output_dir is missing."""
+    config = flask_app.config["ARCHIVER_CONFIG"]
+    orig = config["archive"]["output_dir"]
+    try:
+        config["archive"]["output_dir"] = "/nonexistent/archive/path/for/browse/test"
+        flask_app.config["ARCHIVER_CONFIG"] = config
+        r_children = flask_client.get("/api/browse/children")
+        r_files = flask_client.get("/api/browse/files?path=KSEA/2024/01/01/north")
+    finally:
+        config["archive"]["output_dir"] = orig
+        flask_app.config["ARCHIVER_CONFIG"] = config
+
+    assert r_children.status_code == 200
+    d1 = r_children.get_json()
+    assert d1["archive_unavailable"] is True
+    assert d1["items"] == []
+    assert d1["path"] == ""
+
+    assert r_files.status_code == 200
+    d2 = r_files.get_json()
+    assert d2["archive_unavailable"] is True
+    assert d2["total"] == 0
+    assert d2["files"] == []
+    assert d2["path"] == "KSEA/2024/01/01/north"
+    assert d2["preview_images"] == []
+    assert d2["preview_truncated"] is False

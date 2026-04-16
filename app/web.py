@@ -29,6 +29,17 @@ from flask import (
     url_for,
 )
 
+from app.browse import (
+    _is_image_filename,
+    build_preview_images,
+    index_child_file_counts_cached,
+    index_list_all_filenames,
+    paginate_list,
+    parse_browse_path,
+    safe_browse_segments,
+    scandir_child_names,
+    scandir_list_filenames,
+)
 from app.config import (
     DEFAULT_SLOW_REQUEST_LOG_SECONDS,
     _coerce_float_for_validation,
@@ -39,6 +50,8 @@ from app.constants import (
     BYTES_PER_GIB,
     BYTES_PER_PIB,
     BYTES_PER_TIB,
+    DEFAULT_BROWSE_PAGE_SIZE,
+    DEFAULT_BROWSE_PREVIEW_IMAGE_LIMIT,
     DEFAULT_INTERVAL_MINUTES,
     DEFAULT_LOG_DISPLAY_COUNT,
     PERCENT_SCALE,
@@ -166,6 +179,39 @@ def _effective_browse_airport_limit(config: dict | None) -> int:
     except (TypeError, ValueError):
         return 0
     return max(0, v)
+
+
+_BROWSE_LEVEL_NAMES = ("airports", "years", "months", "days", "cameras")
+
+
+def _effective_browse_page_size(config: dict | None) -> int:
+    """Rows per /api/browse/files page (clamped)."""
+    if not config:
+        return DEFAULT_BROWSE_PAGE_SIZE
+    try:
+        raw = (config.get("web") or {}).get("browse_page_size")
+        if raw is None:
+            v = DEFAULT_BROWSE_PAGE_SIZE
+        else:
+            v = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_BROWSE_PAGE_SIZE
+    return max(1, min(v, 10_000))
+
+
+def _effective_browse_preview_limit(config: dict | None) -> int:
+    """Max preview carousel entries (clamped)."""
+    if not config:
+        return DEFAULT_BROWSE_PREVIEW_IMAGE_LIMIT
+    try:
+        raw = (config.get("web") or {}).get("browse_preview_image_limit")
+        if raw is None:
+            v = DEFAULT_BROWSE_PREVIEW_IMAGE_LIMIT
+        else:
+            v = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_BROWSE_PREVIEW_IMAGE_LIMIT
+    return max(1, min(v, 50_000))
 
 
 def _archive_tree_uncached(output_dir: str, config: dict | None = None) -> dict:
@@ -588,12 +634,171 @@ def serve_archive_file(subpath: str):
     )
 
 
+def _browse_path_bad_request(exc: ValueError):
+    """Map parse_browse_path errors to fixed API strings (do not echo str(exc))."""
+    if exc.args and exc.args[0] == "path too deep":
+        return jsonify({"error": "path has too many segments (maximum five)"}), 400
+    return jsonify({"error": "invalid path"}), 400
+
+
+@app.route("/api/browse/children")
+def api_browse_children():
+    """JSON: one tree level under path (lazy browse). Uses index when valid."""
+    raw_path = request.args.get("path", "") or ""
+    try:
+        parts = parse_browse_path(raw_path)
+    except ValueError as exc:
+        return _browse_path_bad_request(exc)
+    if not safe_browse_segments(parts):
+        return jsonify({"error": "invalid path"}), 400
+    # Deeper than cameras: no folder children; list files via /api/browse/files.
+    if len(parts) >= len(_BROWSE_LEVEL_NAMES):
+        return jsonify(
+            {
+                "error": (
+                    "path too deep for folder listing; "
+                    "use /api/browse/files under a camera folder"
+                )
+            }
+        ), 400
+
+    config = app.config["ARCHIVER_CONFIG"]
+    output_dir = config["archive"]["output_dir"]
+    if not os.path.isdir(output_dir):
+        return jsonify(
+            {
+                "level": _BROWSE_LEVEL_NAMES[len(parts)],
+                "items": [],
+                "path": "/".join(parts),
+                "archive_unavailable": True,
+            }
+        )
+
+    from app.archiver import _index_entries_valid, _load_archive_index
+
+    data = _load_archive_index(output_dir)
+    use_index = bool(
+        data and "files" in data and _index_entries_valid(output_dir, data)
+    )
+    files = data.get("files", {}) if use_index and data else {}
+
+    if use_index:
+        counts = index_child_file_counts_cached(output_dir, files, parts)
+        items = [
+            {"name": name, "file_count": counts[name]} for name in sorted(counts.keys())
+        ]
+    else:
+        names = scandir_child_names(output_dir, parts)
+        items = [{"name": name, "file_count": None} for name in names]
+
+    if len(parts) == 0:
+        lim = _effective_browse_airport_limit(config)
+        if lim > 0:
+            items = items[:lim]
+
+    return jsonify(
+        {
+            "level": _BROWSE_LEVEL_NAMES[len(parts)],
+            "items": items,
+            "path": "/".join(parts),
+            "archive_unavailable": False,
+        }
+    )
+
+
+@app.route("/api/browse/files")
+def api_browse_files():
+    """JSON: paginated filenames under a camera path (five segments)."""
+    raw_path = request.args.get("path", "") or ""
+    try:
+        parts = parse_browse_path(raw_path)
+    except ValueError as exc:
+        return _browse_path_bad_request(exc)
+    if not safe_browse_segments(parts):
+        return jsonify({"error": "invalid path"}), 400
+    if len(parts) != 5:
+        return jsonify(
+            {"error": "path must be airport/year/month/day/camera (five segments)"}
+        ), 400
+
+    config = app.config["ARCHIVER_CONFIG"]
+    output_dir = config["archive"]["output_dir"]
+    offset = request.args.get("offset", 0, type=int) or 0
+    if offset < 0:
+        offset = 0
+
+    page_size = _effective_browse_page_size(config)
+    preview_limit = _effective_browse_preview_limit(config)
+
+    if not os.path.isdir(output_dir):
+        return jsonify(
+            {
+                "path": "/".join(parts),
+                "total": 0,
+                "offset": offset,
+                "limit": page_size,
+                "files": [],
+                "preview_images": [],
+                "preview_truncated": False,
+                "archive_unavailable": True,
+            }
+        )
+
+    from app.archiver import _index_entries_valid, _load_archive_index
+
+    data = _load_archive_index(output_dir)
+    use_index = bool(
+        data and "files" in data and _index_entries_valid(output_dir, data)
+    )
+    files = data.get("files", {}) if use_index and data else {}
+
+    if use_index:
+        all_names = index_list_all_filenames(files, parts)
+    else:
+        all_names = scandir_list_filenames(output_dir, parts)
+
+    total, page = paginate_list(all_names, offset, page_size)
+    preview_images, preview_truncated = build_preview_images(
+        all_names, parts, preview_limit
+    )
+    preview_lookup = {e["filename"]: i for i, e in enumerate(preview_images)}
+
+    rows = []
+    for i, fname in enumerate(page):
+        ts = _parse_timestamp_from_filename(fname)
+        rows.append(
+            {
+                "name": fname,
+                "time_utc": ts if ts else "—",
+                "row": offset + i + 1,
+                "preview_slot": preview_lookup.get(fname, -1),
+                "is_image": _is_image_filename(fname),
+            }
+        )
+
+    return jsonify(
+        {
+            "path": "/".join(parts),
+            "total": total,
+            "offset": offset,
+            "limit": page_size,
+            "files": rows,
+            "preview_images": preview_images,
+            "preview_truncated": preview_truncated,
+            "archive_unavailable": False,
+        }
+    )
+
+
 @app.route("/browse")
 def browse():
     config = app.config["ARCHIVER_CONFIG"]
     output_dir = config["archive"]["output_dir"]
-    tree = _archive_tree(output_dir, config)
-    return render_template("browse.html", tree=tree, output_dir=output_dir)
+    return render_template(
+        "browse.html",
+        output_dir=output_dir,
+        serve_archive_base=url_for("serve_archive_file", subpath=""),
+    )
 
 
 @app.route("/api/health")
