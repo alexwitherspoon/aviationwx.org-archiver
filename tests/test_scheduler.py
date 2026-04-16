@@ -42,9 +42,9 @@ def test_get_state_returns_dict_with_expected_keys():
 
 
 def test_get_state_excludes_internal_keys():
-    """get_state does not expose internal keys like _log_bytes."""
+    """get_state does not expose internal scheduler keys."""
     state = get_state()
-    assert "_log_bytes" not in state
+    assert "_stats_cache_dirty" not in state
     assert not any(k.startswith("_") for k in state)
 
 
@@ -489,22 +489,18 @@ def test_retention_job_rebuilds_index_when_worker_exits_without_result():
                             mock_rebuild.assert_called_once_with(config)
 
 
-def test_append_log_trims_when_exceeding_max_bytes():
-    """_append_log trims oldest entries when total size exceeds _MAX_LOG_BYTES."""
+def test_append_log_respects_deque_maxlen():
+    """_append_log keeps a bounded deque of recent entries."""
+    from collections import deque
+
     from app.scheduler import _append_log, _state, _state_lock
 
-    # Reset state
     with _state_lock:
-        _state["log_entries"] = []
-        _state["_log_bytes"] = 0
+        _state["log_entries"] = deque(maxlen=5)
 
-    # Use large messages (~550 bytes each) and small limit to trigger trim quickly
-    large_msg = "x" * 500
-    with patch("app.scheduler._MAX_LOG_BYTES", 2000):
-        for _ in range(50):
-            _append_log(large_msg, "INFO")
+    for i in range(50):
+        _append_log(f"msg-{i}", "INFO")
 
     with _state_lock:
-        # Should have trimmed; total bytes under limit
-        assert _state["_log_bytes"] <= 2000
-        assert len(_state["log_entries"]) < 50
+        assert len(_state["log_entries"]) == 5
+        assert _state["log_entries"][-1]["message"] == "msg-49"
