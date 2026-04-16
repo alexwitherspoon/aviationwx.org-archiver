@@ -29,6 +29,17 @@ from flask import (
     url_for,
 )
 
+from app.browse import (
+    IMAGE_EXTENSIONS,
+    build_preview_images,
+    index_child_file_counts,
+    index_list_all_filenames,
+    paginate_list,
+    parse_browse_path,
+    safe_browse_segments,
+    scandir_child_names,
+    scandir_list_filenames,
+)
 from app.config import (
     DEFAULT_SLOW_REQUEST_LOG_SECONDS,
     _coerce_float_for_validation,
@@ -39,6 +50,8 @@ from app.constants import (
     BYTES_PER_GIB,
     BYTES_PER_PIB,
     BYTES_PER_TIB,
+    DEFAULT_BROWSE_PAGE_SIZE,
+    DEFAULT_BROWSE_PREVIEW_IMAGE_LIMIT,
     DEFAULT_INTERVAL_MINUTES,
     DEFAULT_LOG_DISPLAY_COUNT,
     PERCENT_SCALE,
@@ -166,6 +179,45 @@ def _effective_browse_airport_limit(config: dict | None) -> int:
     except (TypeError, ValueError):
         return 0
     return max(0, v)
+
+
+_BROWSE_LEVEL_NAMES = ("airports", "years", "months", "days", "cameras")
+
+
+def _effective_browse_page_size(config: dict | None) -> int:
+    """Rows per /api/browse/files page (clamped)."""
+    if not config:
+        return DEFAULT_BROWSE_PAGE_SIZE
+    try:
+        raw = (config.get("web") or {}).get("browse_page_size")
+        if raw is None:
+            v = DEFAULT_BROWSE_PAGE_SIZE
+        else:
+            v = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_BROWSE_PAGE_SIZE
+    return max(1, min(v, 10_000))
+
+
+def _effective_browse_preview_limit(config: dict | None) -> int:
+    """Max preview carousel entries (clamped)."""
+    if not config:
+        return DEFAULT_BROWSE_PREVIEW_IMAGE_LIMIT
+    try:
+        raw = (config.get("web") or {}).get("browse_preview_image_limit")
+        if raw is None:
+            v = DEFAULT_BROWSE_PREVIEW_IMAGE_LIMIT
+        else:
+            v = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_BROWSE_PREVIEW_IMAGE_LIMIT
+    return max(1, min(v, 50_000))
+
+
+def _fname_is_image(fname: str) -> bool:
+    if "." not in fname:
+        return False
+    return fname.rsplit(".", 1)[-1].lower() in IMAGE_EXTENSIONS
 
 
 def _archive_tree_uncached(output_dir: str, config: dict | None = None) -> dict:
@@ -585,6 +637,128 @@ def serve_archive_file(subpath: str):
         mimetype=None,
         as_attachment=False,
         download_name=os.path.basename(full_path),
+    )
+
+
+@app.route("/api/browse/children")
+def api_browse_children():
+    """JSON: one tree level under path (lazy browse). Uses index when valid."""
+    raw_path = request.args.get("path", "") or ""
+    try:
+        parts = parse_browse_path(raw_path)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not safe_browse_segments(parts):
+        return jsonify({"error": "invalid path"}), 400
+
+    config = app.config["ARCHIVER_CONFIG"]
+    output_dir = config["archive"]["output_dir"]
+    if not os.path.isdir(output_dir):
+        return jsonify(
+            {
+                "level": _BROWSE_LEVEL_NAMES[len(parts)],
+                "items": [],
+                "path": "",
+            }
+        )
+
+    from app.archiver import _index_entries_valid, _load_archive_index
+
+    data = _load_archive_index(output_dir)
+    use_index = bool(
+        data and "files" in data and _index_entries_valid(output_dir, data)
+    )
+    files = data.get("files", {}) if use_index and data else {}
+
+    if use_index:
+        counts = index_child_file_counts(files, parts)
+        items = [
+            {"name": name, "file_count": counts[name]} for name in sorted(counts.keys())
+        ]
+    else:
+        names = scandir_child_names(output_dir, parts)
+        items = [{"name": name, "file_count": None} for name in names]
+
+    if len(parts) == 0:
+        lim = _effective_browse_airport_limit(config)
+        if lim > 0:
+            items = items[:lim]
+
+    return jsonify(
+        {
+            "level": _BROWSE_LEVEL_NAMES[len(parts)],
+            "items": items,
+            "path": "/".join(parts),
+        }
+    )
+
+
+@app.route("/api/browse/files")
+def api_browse_files():
+    """JSON: paginated filenames under a camera path (five segments)."""
+    raw_path = request.args.get("path", "") or ""
+    try:
+        parts = parse_browse_path(raw_path)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if not safe_browse_segments(parts):
+        return jsonify({"error": "invalid path"}), 400
+    if len(parts) != 5:
+        return jsonify(
+            {"error": "path must be airport/year/month/day/camera (five segments)"}
+        ), 400
+
+    config = app.config["ARCHIVER_CONFIG"]
+    output_dir = config["archive"]["output_dir"]
+    offset = request.args.get("offset", 0, type=int) or 0
+    if offset < 0:
+        offset = 0
+
+    page_size = _effective_browse_page_size(config)
+    preview_limit = _effective_browse_preview_limit(config)
+
+    from app.archiver import _index_entries_valid, _load_archive_index
+
+    data = _load_archive_index(output_dir)
+    use_index = bool(
+        data and "files" in data and _index_entries_valid(output_dir, data)
+    )
+    files = data.get("files", {}) if use_index and data else {}
+
+    if use_index:
+        all_names = index_list_all_filenames(files, parts)
+    else:
+        all_names = scandir_list_filenames(output_dir, parts)
+
+    total, page = paginate_list(all_names, offset, page_size)
+    preview_images, preview_truncated, _idx_map = build_preview_images(
+        all_names, parts, preview_limit
+    )
+    preview_lookup = {e["filename"]: i for i, e in enumerate(preview_images)}
+
+    rows = []
+    for i, fname in enumerate(page):
+        ts = _parse_timestamp_from_filename(fname)
+        rows.append(
+            {
+                "name": fname,
+                "time_utc": ts if ts else "—",
+                "row": offset + i + 1,
+                "preview_slot": preview_lookup.get(fname, -1),
+                "is_image": _fname_is_image(fname),
+            }
+        )
+
+    return jsonify(
+        {
+            "path": "/".join(parts),
+            "total": total,
+            "offset": offset,
+            "limit": page_size,
+            "files": rows,
+            "preview_images": preview_images,
+            "preview_truncated": preview_truncated,
+        }
     )
 
 
