@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from flask import (
     Flask,
     abort,
+    g,
     jsonify,
     redirect,
     render_template,
@@ -36,7 +37,7 @@ from app.constants import (
     DEFAULT_LOG_DISPLAY_COUNT,
     PERCENT_SCALE,
 )
-from app.scheduler import clear_archive_cache_dirty, get_state, trigger_run
+from app.scheduler import consume_archive_cache_dirty_flags, get_state, trigger_run
 from app.version import GIT_SHA, VERSION
 
 logger = logging.getLogger(__name__)
@@ -55,9 +56,39 @@ def invalidate_archive_cache() -> None:
 
 
 def _maybe_invalidate_archive_cache() -> None:
-    """Clear cache if scheduler signaled archive/retention completed."""
-    if clear_archive_cache_dirty():
-        invalidate_archive_cache()
+    """Invalidate stats/tree cache entries when scheduler signals changes."""
+    stats_d, tree_d = consume_archive_cache_dirty_flags()
+    global _archive_cache
+    if stats_d and tree_d:
+        _archive_cache.clear()
+        return
+    if stats_d:
+        _archive_cache = {k: v for k, v in _archive_cache.items() if k[1] != "stats"}
+    if tree_d:
+        _archive_cache = {k: v for k, v in _archive_cache.items() if k[1] != "tree"}
+
+
+@app.before_request
+def _start_request_timer():
+    g._request_start = time.perf_counter()
+
+
+@app.after_request
+def _log_slow_request(response):
+    cfg = app.config.get("ARCHIVER_CONFIG") or {}
+    threshold = (cfg.get("web") or {}).get("slow_request_log_seconds", 0)
+    if threshold and threshold > 0:
+        start = getattr(g, "_request_start", None)
+        if start is not None:
+            elapsed = time.perf_counter() - start
+            if elapsed >= threshold:
+                logger.warning(
+                    "Slow request %.2fs %s %s",
+                    elapsed,
+                    request.method,
+                    request.path,
+                )
+    return response
 
 
 @app.context_processor
@@ -107,7 +138,7 @@ def timestamp_from_filename_filter(filename: str) -> str:
     return result if result else "—"
 
 
-def _archive_tree_uncached(output_dir: str) -> dict:
+def _archive_tree_uncached(output_dir: str, config: dict | None = None) -> dict:
     """
     Build a nested dict representing the archive directory tree.
 
@@ -143,6 +174,12 @@ def _archive_tree_uncached(output_dir: str) -> dict:
             airports = sorted(dirs, key=lambda e: e.name)
     except OSError:
         return tree
+
+    limit = 0
+    if config:
+        limit = int((config.get("web") or {}).get("browse_airport_limit", 0) or 0)
+    if limit > 0:
+        airports = airports[:limit]
 
     for airport_entry in airports:
         airport = airport_entry.name
@@ -235,7 +272,7 @@ def _archive_tree_uncached(output_dir: str) -> dict:
     return tree
 
 
-def _archive_tree(output_dir: str) -> dict:
+def _archive_tree(output_dir: str, config: dict | None = None) -> dict:
     """Cached wrapper for _archive_tree_uncached."""
     _maybe_invalidate_archive_cache()
     key = (output_dir, "tree")
@@ -244,7 +281,7 @@ def _archive_tree(output_dir: str) -> dict:
         ts, data = _archive_cache[key]
         if now - ts < _ARCHIVE_CACHE_TTL_SEC:
             return data
-    data = _archive_tree_uncached(output_dir)
+    data = _archive_tree_uncached(output_dir, config)
     _archive_cache[key] = (now, data)
     return data
 
@@ -371,7 +408,7 @@ def _archive_stats_uncached(output_dir: str, config: dict | None = None) -> dict
         total_size = 0
         airports.clear()
         collected: list[tuple[str, float, int]] = []
-        for fpath, st in _scandir_walk_files(output_dir, config=None):
+        for fpath, st in _scandir_walk_files(output_dir, config=config):
             total_files += 1
             total_size += st.st_size
             collected.append((fpath, st.st_mtime, st.st_size))
@@ -518,17 +555,30 @@ def serve_archive_file(subpath: str):
 def browse():
     config = app.config["ARCHIVER_CONFIG"]
     output_dir = config["archive"]["output_dir"]
-    tree = _archive_tree(output_dir)
+    tree = _archive_tree(output_dir, config)
     return render_template("browse.html", tree=tree, output_dir=output_dir)
+
+
+@app.route("/api/health")
+def api_health():
+    """Minimal liveness check (no archive scan). Use for Docker HEALTHCHECK."""
+    return jsonify({"status": "ok"})
 
 
 @app.route("/api/status")
 def api_status():
-    """JSON status endpoint for health checks and monitoring."""
+    """JSON status endpoint for monitoring. Use light=1 to skip heavy archive stats."""
     state = get_state()
     config = app.config["ARCHIVER_CONFIG"]
     output_dir = config["archive"]["output_dir"]
-    archive_stats = _archive_stats(output_dir, config)
+    light = request.args.get("light", "").lower() in ("1", "true", "yes")
+    if light:
+        archive_stats = {
+            "light": True,
+            "disk_usage": _disk_usage(output_dir),
+        }
+    else:
+        archive_stats = _archive_stats(output_dir, config)
     response = {
         "status": "ok",
         "version": VERSION,
