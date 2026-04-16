@@ -62,8 +62,8 @@ EXPOSE 8080
 # Persistent storage — mount host directories to these paths
 VOLUME ["/archive", "/config"]
 
-# Health check — poll the JSON status endpoint
+# Health check — minimal endpoint (no archive scan)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/status')" || exit 1
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health')" || exit 1
 
 CMD ["python", "main.py"]

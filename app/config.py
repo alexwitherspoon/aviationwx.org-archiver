@@ -12,9 +12,13 @@ import os
 import yaml
 
 from app.constants import (
+    DEFAULT_BROWSE_AIRPORT_LIMIT,
+    DEFAULT_FETCH_ON_START_DELAY_SECONDS,
     DEFAULT_INTERVAL_MINUTES,
     DEFAULT_LOG_DISPLAY_COUNT,
     DEFAULT_REQUEST_DELAY_SECONDS,
+    DEFAULT_SLOW_REQUEST_LOG_SECONDS,
+    DEFAULT_WAITRESS_THREADS,
 )
 
 logger = logging.getLogger(__name__)
@@ -28,6 +32,8 @@ DEFAULT_CONFIG = {
     "schedule": {
         "interval_minutes": DEFAULT_INTERVAL_MINUTES,
         "fetch_on_start": True,
+        # Delay (s) before initial fetch_on_start so the web server can bind first.
+        "fetch_on_start_delay_seconds": DEFAULT_FETCH_ON_START_DELAY_SECONDS,
         "job_timeout_minutes": 30,
         # Unix nice increment for worker (higher = lower CPU priority). 0 = no change.
         "worker_nice": 10,
@@ -55,10 +61,15 @@ DEFAULT_CONFIG = {
         "enabled": True,
         "port": 8080,
         "host": "0.0.0.0",
+        "waitress_threads": DEFAULT_WAITRESS_THREADS,
         "log_display_count": DEFAULT_LOG_DISPLAY_COUNT,
         # When > 0 and web enabled: archive worker yields this many seconds at
         # strategic points so the web UI gets CPU time. 0 = disabled.
         "priority_yield_seconds": 0.02,
+        # Cap top-level airport directories in browse (0 = unlimited).
+        "browse_airport_limit": DEFAULT_BROWSE_AIRPORT_LIMIT,
+        # Log slow HTTP requests at WARNING (seconds); 0 = disabled.
+        "slow_request_log_seconds": DEFAULT_SLOW_REQUEST_LOG_SECONDS,
     },
     "logging": {
         "level": "INFO",
@@ -76,6 +87,11 @@ _ENV_TO_CONFIG: list[tuple[str, tuple[str, ...], str | type]] = [
     ("ARCHIVER_ARCHIVE_RETENTION_MAX_GB", ("archive", "retention_max_gb"), "float"),
     ("ARCHIVER_SCHEDULE_INTERVAL_MINUTES", ("schedule", "interval_minutes"), int),
     ("ARCHIVER_SCHEDULE_FETCH_ON_START", ("schedule", "fetch_on_start"), bool),
+    (
+        "ARCHIVER_SCHEDULE_FETCH_ON_START_DELAY_SECONDS",
+        ("schedule", "fetch_on_start_delay_seconds"),
+        int,
+    ),
     ("ARCHIVER_SCHEDULE_JOB_TIMEOUT_MINUTES", ("schedule", "job_timeout_minutes"), int),
     ("ARCHIVER_SCHEDULE_WORKER_NICE", ("schedule", "worker_nice"), int),
     (
@@ -103,7 +119,14 @@ _ENV_TO_CONFIG: list[tuple[str, tuple[str, ...], str | type]] = [
     ("ARCHIVER_WEB_PORT", ("web", "port"), int),
     ("ARCHIVER_WEB_HOST", ("web", "host"), str),
     ("ARCHIVER_WEB_LOG_DISPLAY_COUNT", ("web", "log_display_count"), int),
+    ("ARCHIVER_WEB_WAITRESS_THREADS", ("web", "waitress_threads"), int),
     ("ARCHIVER_WEB_PRIORITY_YIELD_SECONDS", ("web", "priority_yield_seconds"), "float"),
+    ("ARCHIVER_WEB_BROWSE_AIRPORT_LIMIT", ("web", "browse_airport_limit"), int),
+    (
+        "ARCHIVER_WEB_SLOW_REQUEST_LOG_SECONDS",
+        ("web", "slow_request_log_seconds"),
+        "float",
+    ),
     ("ARCHIVER_LOGGING_LEVEL", ("logging", "level"), str),
     ("ARCHIVER_LOGGING_FILE", ("logging", "file"), str),
 ]
@@ -207,6 +230,58 @@ def load_config(config_path: str | None = None) -> dict:
     return config
 
 
+def _coerce_int_for_validation(
+    raw: object, field: str
+) -> tuple[int | None, str | None]:
+    """
+    Parse int for validate_config. Returns (value, None) or (None, error_message).
+
+    Rejects bool (YAML sometimes coerces oddly) and non-numeric strings.
+    """
+    if raw is None:
+        return None, f"{field} must be set to an integer."
+    if isinstance(raw, bool):
+        return None, f"{field} must be a number, not a boolean."
+    if isinstance(raw, int):
+        return raw, None
+    if isinstance(raw, float):
+        if not raw.is_integer():
+            return None, f"{field} must be a whole number (integer), not {raw}."
+        return int(raw), None
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None, f"{field} cannot be empty."
+        try:
+            return int(s, 10), None
+        except ValueError:
+            return None, f"{field} must be an integer."
+    return None, f"{field} must be an integer."
+
+
+def _coerce_float_for_validation(
+    raw: object, field: str
+) -> tuple[float | None, str | None]:
+    """Parse float for validate_config; (value, None) or (None, error_message)."""
+    if raw is None:
+        return None, f"{field} must be set to a number."
+    if isinstance(raw, bool):
+        return None, f"{field} must be a number, not a boolean."
+    if isinstance(raw, int):
+        return float(raw), None
+    if isinstance(raw, float):
+        return raw, None
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None, f"{field} cannot be empty."
+        try:
+            return float(s), None
+        except ValueError:
+            return None, f"{field} must be a number."
+    return None, f"{field} must be a number."
+
+
 def validate_config(config: dict) -> list[str]:
     """
     Validate configuration for minimal operation.
@@ -257,6 +332,51 @@ def validate_config(config: dict) -> list[str]:
     retention_minute = config.get("schedule", {}).get("retention_minute", 0)
     if not 0 <= retention_minute <= 59:
         errors.append("Schedule retention_minute must be 0–59.")
+
+    sched = config.get("schedule") or {}
+    delay_raw = sched.get("fetch_on_start_delay_seconds")
+    if delay_raw is None:
+        delay_raw = DEFAULT_FETCH_ON_START_DELAY_SECONDS
+    delay, delay_err = _coerce_int_for_validation(
+        delay_raw, "schedule.fetch_on_start_delay_seconds"
+    )
+    if delay_err:
+        errors.append(delay_err)
+    elif delay is not None and not 0 <= delay <= 3600:
+        errors.append(
+            "schedule.fetch_on_start_delay_seconds must be between 0 and 3600 "
+            "(seconds)."
+        )
+
+    web_cfg = config.get("web") or {}
+    wt_raw = web_cfg.get("waitress_threads")
+    if wt_raw is None:
+        wt_raw = DEFAULT_WAITRESS_THREADS
+    wt, wt_err = _coerce_int_for_validation(wt_raw, "web.waitress_threads")
+    if wt_err:
+        errors.append(wt_err)
+    elif wt is not None and not 1 <= wt <= 128:
+        errors.append("web.waitress_threads must be between 1 and 128.")
+
+    bal_raw = web_cfg.get("browse_airport_limit")
+    if bal_raw is None:
+        bal_raw = DEFAULT_BROWSE_AIRPORT_LIMIT
+    bal, bal_err = _coerce_int_for_validation(bal_raw, "web.browse_airport_limit")
+    if bal_err:
+        errors.append(bal_err)
+    elif bal is not None and (bal < 0 or bal > 1_000_000):
+        errors.append("web.browse_airport_limit must be between 0 and 1000000.")
+
+    slow_raw = web_cfg.get("slow_request_log_seconds")
+    if slow_raw is None:
+        slow_raw = DEFAULT_SLOW_REQUEST_LOG_SECONDS
+    slow, slow_err = _coerce_float_for_validation(
+        slow_raw, "web.slow_request_log_seconds"
+    )
+    if slow_err:
+        errors.append(slow_err)
+    elif slow is not None and (slow < 0 or slow > 300):
+        errors.append("web.slow_request_log_seconds must be between 0 and 300.")
 
     if errors:
         logger.debug("Config validation failed: %s", "; ".join(errors))

@@ -42,9 +42,9 @@ def test_get_state_returns_dict_with_expected_keys():
 
 
 def test_get_state_excludes_internal_keys():
-    """get_state does not expose internal keys like _log_bytes."""
+    """get_state does not expose internal scheduler keys."""
     state = get_state()
-    assert "_log_bytes" not in state
+    assert "_stats_cache_dirty" not in state
     assert not any(k.startswith("_") for k in state)
 
 
@@ -240,6 +240,29 @@ def test_start_scheduler_adds_job_and_runs_fetch_on_start():
     job = scheduler.get_job("archive")
     assert job is not None
     mock_thread.return_value.start.assert_called_once()
+
+
+def test_start_scheduler_invalid_fetch_delay_logs_and_uses_zero():
+    """start_scheduler does not crash when fetch_on_start_delay_seconds is invalid."""
+    from app.scheduler import start_scheduler
+
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["airports"]["selected"] = ["KSPB"]
+    config["schedule"]["fetch_on_start"] = True
+    config["schedule"]["fetch_on_start_delay_seconds"] = "not-an-int"
+
+    def config_getter():
+        return config
+
+    with _mock_process_to_run_synchronously():
+        with patch("app.worker.run_archive"):
+            with patch("app.scheduler.threading.Thread") as mock_thread:
+                with patch("app.scheduler.logger") as mock_logger:
+                    scheduler = start_scheduler(config_getter)
+
+    assert scheduler is not None
+    mock_thread.return_value.start.assert_called_once()
+    mock_logger.warning.assert_called()
 
 
 def test_start_scheduler_skips_initial_run_when_fetch_on_start_false():
@@ -489,22 +512,22 @@ def test_retention_job_rebuilds_index_when_worker_exits_without_result():
                             mock_rebuild.assert_called_once_with(config)
 
 
-def test_append_log_trims_when_exceeding_max_bytes():
-    """_append_log trims oldest entries when total size exceeds _MAX_LOG_BYTES."""
+def test_append_log_respects_deque_maxlen():
+    """_append_log keeps a bounded deque of recent entries."""
+    from collections import deque
+
     from app.scheduler import _append_log, _state, _state_lock
 
-    # Reset state
     with _state_lock:
-        _state["log_entries"] = []
-        _state["_log_bytes"] = 0
+        previous = _state["log_entries"]
+        _state["log_entries"] = deque(maxlen=5)
+    try:
+        for i in range(50):
+            _append_log(f"msg-{i}", "INFO")
 
-    # Use large messages (~550 bytes each) and small limit to trigger trim quickly
-    large_msg = "x" * 500
-    with patch("app.scheduler._MAX_LOG_BYTES", 2000):
-        for _ in range(50):
-            _append_log(large_msg, "INFO")
-
-    with _state_lock:
-        # Should have trimmed; total bytes under limit
-        assert _state["_log_bytes"] <= 2000
-        assert len(_state["log_entries"]) < 50
+        with _state_lock:
+            assert len(_state["log_entries"]) == 5
+            assert _state["log_entries"][-1]["message"] == "msg-49"
+    finally:
+        with _state_lock:
+            _state["log_entries"] = previous

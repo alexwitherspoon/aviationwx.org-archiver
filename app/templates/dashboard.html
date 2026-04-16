@@ -149,9 +149,39 @@
 {% endif %}
 
 <script>
-  // Auto-refresh while a run is in progress
-  {% if state.running %}
-  setTimeout(function() { location.reload(); }, 5000);
-  {% endif %}
+  (function() {
+    var running = {{ 'true' if state.running else 'false' }};
+    if (!running) return;
+    var inFlight = false;
+    function poll() {
+      if (inFlight) return;
+      if (document.hidden) {
+        setTimeout(poll, 5000);
+        return;
+      }
+      inFlight = true;
+      var ctrl = new AbortController();
+      var t = setTimeout(function() { ctrl.abort(); }, 8000);
+      fetch('/api/status?light=1', { signal: ctrl.signal, cache: 'no-store' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          clearTimeout(t);
+          if (!data.running) {
+            location.reload();
+            return;
+          }
+          setTimeout(poll, 5000);
+        })
+        .catch(function() {
+          clearTimeout(t);
+          setTimeout(poll, 5000);
+        })
+        .finally(function() { inFlight = false; });
+    }
+    document.addEventListener('visibilitychange', function() {
+      if (!document.hidden && running) poll();
+    });
+    setTimeout(poll, 5000);
+  })();
 </script>
 {% endblock %}

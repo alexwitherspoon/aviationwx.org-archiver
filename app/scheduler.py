@@ -5,19 +5,23 @@ Runs archive passes on a configurable interval using APScheduler.
 Archive jobs run in a separate process to avoid GIL contention with the web UI.
 """
 
-import json
 import logging
 import multiprocessing
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app.config import validate_config
-from app.constants import DEFAULT_INTERVAL_MINUTES
+from app.config import (
+    DEFAULT_FETCH_ON_START_DELAY_SECONDS,
+    _coerce_int_for_validation,
+    validate_config,
+)
+from app.constants import DEFAULT_INTERVAL_MINUTES, DEFAULT_MAX_LOG_ENTRIES
 from app.worker import MSG_COMPLETE, MSG_LOG, run_archive_worker, run_retention_worker
 
 logger = logging.getLogger(__name__)
@@ -33,30 +37,34 @@ _state = {
     "_running_since": None,  # float | None — time.time() when run started
     "_running_job": None,  # "archive" | "retention" | None — which job holds the lock
     "run_count": 0,  # int — total number of completed runs
-    "log_entries": [],  # list[dict] — recent log entries for the web GUI
-    "_log_bytes": 0,  # internal: approximate byte size of log_entries
-    "_archive_cache_dirty": False,  # True after archive/retention; web clears cache
+    "log_entries": deque(maxlen=DEFAULT_MAX_LOG_ENTRIES),  # recent logs for web GUI
+    "_stats_cache_dirty": False,  # web stats cache invalidation
+    "_tree_cache_dirty": False,  # browse tree cache invalidation
 }
-
-_MAX_LOG_BYTES = 500 * 1024  # 500 KB
 
 
 def get_state() -> dict:
     """Return a copy of the current scheduler state."""
     with _state_lock:
-        return {k: v for k, v in _state.items() if not k.startswith("_")}
+        out = {k: v for k, v in _state.items() if not k.startswith("_")}
+        if "log_entries" in out:
+            out["log_entries"] = list(out["log_entries"])
+        return out
 
 
-def clear_archive_cache_dirty() -> bool:
+def consume_archive_cache_dirty_flags() -> tuple[bool, bool]:
     """
-    Clear the archive-cache-dirty flag. Returns True if it was set.
+    Read and clear stats/tree cache dirty flags.
 
-    Web calls this before serving stats/tree; if True, web should invalidate
-    its cache. Avoids scheduler importing app.web (circular import / deadlock).
+    Returns:
+        (stats_dirty, tree_dirty) — True if that cache should be invalidated.
+
+    Web calls this before serving stats/tree. Avoids scheduler importing app.web.
     """
     with _state_lock:
-        was_dirty = _state.pop("_archive_cache_dirty", False)
-        return was_dirty
+        stats = _state.pop("_stats_cache_dirty", False)
+        tree = _state.pop("_tree_cache_dirty", False)
+        return (stats, tree)
 
 
 def _append_log(message: str, level: str = "INFO") -> None:
@@ -66,13 +74,7 @@ def _append_log(message: str, level: str = "INFO") -> None:
         "message": message,
     }
     with _state_lock:
-        entry_bytes = len(json.dumps(entry))
         _state["log_entries"].append(entry)
-        _state["_log_bytes"] = _state.get("_log_bytes", 0) + entry_bytes
-
-        while _state["_log_bytes"] > _MAX_LOG_BYTES and len(_state["log_entries"]) > 1:
-            removed = _state["log_entries"].pop(0)
-            _state["_log_bytes"] -= len(json.dumps(removed))
 
 
 class _SchedulerLogHandler(logging.Handler):
@@ -215,7 +217,8 @@ def _archive_job(config: dict) -> None:
             _state["running"] = False
             _state["_running_since"] = None
             _state["_running_job"] = None
-            _state["_archive_cache_dirty"] = True
+            _state["_stats_cache_dirty"] = True
+            _state["_tree_cache_dirty"] = True
         _update_next_run()
 
 
@@ -301,17 +304,23 @@ def _retention_job(config: dict) -> None:
             _append_log(f"Retention cleanup failed: {result['error']}", "ERROR")
             if "exited without result" in str(result["error"]):
                 _rebuild_index_on_worker_crash(config)
+            with _state_lock:
+                _state["_stats_cache_dirty"] = True
+                _state["_tree_cache_dirty"] = True
         else:
             deleted = result.get("stats", {}).get("deleted", 0)
             _append_log(
                 f"Retention cleanup complete — deleted {deleted} file(s).", "INFO"
             )
+            with _state_lock:
+                _state["_stats_cache_dirty"] = True
+                if deleted > 0:
+                    _state["_tree_cache_dirty"] = True
     finally:
         with _state_lock:
             _state["running"] = False
             _state["_running_since"] = None
             _state["_running_job"] = None
-            _state["_archive_cache_dirty"] = True
     _update_next_run()
 
 
@@ -391,7 +400,29 @@ def start_scheduler(config_getter) -> BackgroundScheduler:
     if config["schedule"].get("fetch_on_start", True):
         logger.info("fetch_on_start is enabled — running initial archive pass.")
         _append_log("Running initial archive pass (fetch_on_start).", "INFO")
-        threading.Thread(target=_job_wrapper, daemon=True).start()
+        sched = config.get("schedule") or {}
+        delay_raw = sched.get("fetch_on_start_delay_seconds")
+        if delay_raw is None:
+            delay_raw = DEFAULT_FETCH_ON_START_DELAY_SECONDS
+        delay_parsed, delay_err = _coerce_int_for_validation(
+            delay_raw, "schedule.fetch_on_start_delay_seconds"
+        )
+        if delay_err or delay_parsed is None:
+            logger.warning(
+                "Invalid schedule.fetch_on_start_delay_seconds (%r): %s — using 0.",
+                delay_raw,
+                delay_err,
+            )
+            delay = 0
+        else:
+            delay = max(0, delay_parsed)
+
+        def _delayed_start() -> None:
+            if delay:
+                time.sleep(delay)
+            _job_wrapper()
+
+        threading.Thread(target=_delayed_start, daemon=True).start()
 
     return scheduler
 

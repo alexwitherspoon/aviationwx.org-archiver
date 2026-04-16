@@ -2,6 +2,7 @@
 Tests for app.web — Flask routes, helpers, and form handling.
 """
 
+import copy
 import json
 import os
 import tempfile
@@ -60,6 +61,22 @@ def test_archive_tree_returns_empty_when_output_dir_missing():
     """_archive_tree returns empty dict when output_dir does not exist."""
     result = _archive_tree("/nonexistent/path/12345")
     assert result == {}
+
+
+def test_archive_tree_respects_browse_airport_limit():
+    """_archive_tree limits top-level airports when browse_airport_limit is set."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for code in ("KAAA", "KBBB", "KCCC"):
+            path = os.path.join(tmpdir, code, "2024", "06", "15", "cam")
+            os.makedirs(path, exist_ok=True)
+            with open(os.path.join(path, "a.jpg"), "wb") as fh:
+                fh.write(b"x")
+        cfg = copy.deepcopy(DEFAULT_CONFIG)
+        cfg["web"]["browse_airport_limit"] = 1
+        tree = _archive_tree(tmpdir, cfg)
+
+    assert len(tree) == 1
+    assert "KAAA" in tree
 
 
 def test_archive_tree_builds_nested_structure_from_directory():
@@ -764,6 +781,43 @@ def test_api_status_includes_version_and_git_sha(flask_client):
     assert "version" in data
     assert data["version"]  # Non-empty version string
     assert "git_sha" in data
+
+
+def test_api_health_returns_minimal_json(flask_client):
+    """GET /api/health returns ok without heavy work."""
+    resp = flask_client.get("/api/health")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data == {"status": "ok"}
+
+
+def test_api_status_light_skips_archive_stats(flask_client):
+    """GET /api/status?light=1 does not call _archive_stats."""
+    with patch("app.web._archive_stats") as mock_stats:
+        resp = flask_client.get("/api/status?light=1")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["status"] == "ok"
+    assert data["archive"].get("light") is True
+    mock_stats.assert_not_called()
+
+
+def test_dashboard_accepts_string_slow_request_threshold(flask_client):
+    """Quoted YAML web.slow_request_log_seconds must not raise during requests."""
+    cfg = flask_app.config["ARCHIVER_CONFIG"]
+    prev = cfg["web"].get("slow_request_log_seconds")
+    try:
+        cfg["web"]["slow_request_log_seconds"] = "2.5"
+        flask_app.config["ARCHIVER_CONFIG"] = cfg
+        resp = flask_client.get("/")
+    finally:
+        if prev is not None:
+            cfg["web"]["slow_request_log_seconds"] = prev
+        else:
+            cfg["web"].pop("slow_request_log_seconds", None)
+        flask_app.config["ARCHIVER_CONFIG"] = cfg
+
+    assert resp.status_code == 200
 
 
 def test_dashboard_footer_shows_version(flask_client):

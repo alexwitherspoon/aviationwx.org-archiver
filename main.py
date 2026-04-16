@@ -14,7 +14,12 @@ import time
 
 import waitress
 
-from app.config import check_host_resources, load_config
+from app.config import (
+    _coerce_int_for_validation,
+    check_host_resources,
+    load_config,
+)
+from app.constants import DEFAULT_WAITRESS_THREADS
 from app.ntp import check_ntp_time
 from app.scheduler import start_scheduler
 from app.web import app
@@ -59,6 +64,37 @@ def setup_logging(config: dict) -> None:
     logging.basicConfig(level=level, handlers=handlers)
 
 
+def _waitress_threads_runtime(config: dict) -> int:
+    """
+    Resolve Waitress thread count for startup.
+
+    ``load_config()`` does not run ``validate_config()``; mis-typed YAML must not
+    crash the process. Coerces like validation and clamps to [1, 128].
+    """
+    logger = logging.getLogger(__name__)
+    web_cfg = config.get("web") or {}
+    raw = web_cfg.get("waitress_threads")
+    if raw is None:
+        raw = DEFAULT_WAITRESS_THREADS
+    wt, err = _coerce_int_for_validation(raw, "web.waitress_threads")
+    if err or wt is None:
+        logger.warning(
+            "Invalid web.waitress_threads (%r): %s — using %d.",
+            raw,
+            err,
+            DEFAULT_WAITRESS_THREADS,
+        )
+        return max(1, min(128, DEFAULT_WAITRESS_THREADS))
+    clamped = max(1, min(128, wt))
+    if clamped != wt:
+        logger.warning(
+            "web.waitress_threads %d is outside [1,128]; using %d.",
+            wt,
+            clamped,
+        )
+    return clamped
+
+
 def main() -> None:
     config = load_config()
     setup_logging(config)
@@ -81,7 +117,8 @@ def main() -> None:
             port = int(config["web"]["port"])
             host_display = host if host != "0.0.0.0" else "localhost"
             logger.info("Web GUI available at http://%s:%d", host_display, port)
-            waitress.serve(app, host=host, port=port, threads=6)
+            threads = _waitress_threads_runtime(config)
+            waitress.serve(app, host=host, port=port, threads=threads)
         else:
             logger.info("Web UI disabled; running scheduler only.")
             while True:

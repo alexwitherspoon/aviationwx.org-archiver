@@ -54,6 +54,16 @@ MIN_IMAGE_SIZE = 256
 # Config defaults (used as fallbacks in .get() when key missing)
 DEFAULT_INTERVAL_MINUTES = 15
 DEFAULT_LOG_DISPLAY_COUNT = 100
+# Scheduler log buffer: deque maxlen (replaces byte-based trimming)
+DEFAULT_MAX_LOG_ENTRIES = 2000
+# Waitress WSGI server thread pool size (web responsiveness under load)
+DEFAULT_WAITRESS_THREADS = 6
+# Optional delay before fetch_on_start initial run (lets web bind first)
+DEFAULT_FETCH_ON_START_DELAY_SECONDS = 0
+# Browse page: max airport top-level dirs (0 = unlimited)
+DEFAULT_BROWSE_AIRPORT_LIMIT = 0
+# Log WARNING when a request exceeds this duration (seconds); 0 = disabled
+DEFAULT_SLOW_REQUEST_LOG_SECONDS = 2.0
 
 # API rate limiting (aviationwx.org - https://api.aviationwx.org/)
 # Anonymous: 100/min, 1,000/hr, 10,000/day. Partner: 500/min, 5,000/hr, 50,000/day.

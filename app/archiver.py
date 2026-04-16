@@ -237,11 +237,11 @@ def _rel_path_safe(output_dir: str, rel: str) -> bool:
         return False
 
 
-def _index_entries_valid(output_dir: str, data: dict, sample_size: int = 10) -> bool:
+def _index_entries_valid_sample(
+    output_dir: str, data: dict, sample_size: int = 10
+) -> bool:
     """
-    Spot-check a sample of index entries. Returns False if any are missing on disk.
-
-    Used to detect index staleness (e.g. manual file deletion) and trigger rebuild.
+    Single spot-check pass. Returns False if any sampled entry is invalid on disk.
     """
     files = data.get("files", {})
     if not files:
@@ -257,6 +257,24 @@ def _index_entries_valid(output_dir: str, data: dict, sample_size: int = 10) -> 
             logger.debug("Index staleness: %s missing on disk; triggering rebuild", rel)
             return False
     return True
+
+
+def _index_entries_valid(output_dir: str, data: dict, sample_size: int = 10) -> bool:
+    """
+    Spot-check index entries. Retries once with a new random sample on failure.
+
+    Used to detect index staleness (e.g. manual file deletion) and trigger rebuild.
+    """
+    if _index_entries_valid_sample(output_dir, data, sample_size):
+        return True
+    logger.debug("Index spot-check failed; retrying once with new sample.")
+    if _index_entries_valid_sample(output_dir, data, sample_size):
+        return True
+    logger.info(
+        "Index spot-check failed twice for %s; falling back to full scan/rebuild.",
+        output_dir,
+    )
+    return False
 
 
 def _archive_tree_from_index(data: dict, output_dir: str) -> dict | None:
@@ -406,6 +424,9 @@ def _scandir_walk_files(
 
 def _http_get(config: dict, url: str, **kwargs) -> requests.Response:
     """GET with session reuse when available (avoids per-request connection setup)."""
+    if "timeout" not in kwargs:
+        to = (config.get("source") or {}).get("request_timeout", 30)
+        kwargs = {**kwargs, "timeout": to}
     session = config.get("source", {}).get("_session")
     if session is not None:
         return session.get(url, **kwargs)
