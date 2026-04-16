@@ -968,3 +968,10 @@ def test_api_browse_children_rejects_bad_path(flask_client):
     """GET /api/browse/children returns 400 for traversal-like path."""
     resp = flask_client.get("/api/browse/children?path=x/../y")
     assert resp.status_code == 400
+
+
+def test_api_browse_children_rejects_five_segment_path(flask_client):
+    """GET /api/browse/children returns 400 at camera depth (use /api/browse/files)."""
+    resp = flask_client.get("/api/browse/children?path=KSEA/2024/01/01/north")
+    assert resp.status_code == 400
+    assert "error" in resp.get_json()

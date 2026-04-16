@@ -650,6 +650,16 @@ def api_browse_children():
         return jsonify({"error": str(exc)}), 400
     if not safe_browse_segments(parts):
         return jsonify({"error": "invalid path"}), 400
+    # Deeper than cameras: no folder children; list files via /api/browse/files.
+    if len(parts) >= len(_BROWSE_LEVEL_NAMES):
+        return jsonify(
+            {
+                "error": (
+                    "path too deep for folder listing; "
+                    "use /api/browse/files under a camera folder"
+                )
+            }
+        ), 400
 
     config = app.config["ARCHIVER_CONFIG"]
     output_dir = config["archive"]["output_dir"]

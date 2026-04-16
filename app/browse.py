@@ -165,8 +165,12 @@ def build_preview_images(
     prefix_parts: tuple[str, ...],
     preview_limit: int,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Capped preview list for carousel; returns (preview_entries, truncated)."""
-    images = [f for f in sorted(all_filenames) if _is_image_filename(f)]
+    """Capped preview list for carousel; returns (preview_entries, truncated).
+
+    ``all_filenames`` must already be sorted (e.g. from ``index_list_all_filenames``
+    or ``scandir_list_filenames``); filtering preserves order.
+    """
+    images = [f for f in all_filenames if _is_image_filename(f)]
     index_map = {fn: i for i, fn in enumerate(images)}
     truncated = len(images) > preview_limit
     base = "/".join(prefix_parts)
