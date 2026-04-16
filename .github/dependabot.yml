@@ -1,5 +1,8 @@
 # Dependabot configuration for aviationwx.org-archiver
 # https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# GitHub Actions use full commit SHAs (with # vX.Y.Z comments) for supply-chain
+# hardening; Dependabot still proposes SHA updates when action tags move.
 
 version: 2
 
