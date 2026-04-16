@@ -2,7 +2,7 @@
 # https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 #
 # GitHub Actions use full commit SHAs (with # vX.Y.Z comments) for supply-chain
-# hardening; Dependabot still proposes SHA updates when action tags move.
+# hardening; Dependabot still proposes updates to pinned SHAs for newer action releases.
 
 version: 2
 
