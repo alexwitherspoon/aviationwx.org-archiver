@@ -64,6 +64,41 @@ def _is_image_filename(name: str) -> bool:
     return ext in IMAGE_EXTENSIONS
 
 
+def _index_rel_six_parts(rel: str) -> list[str] | None:
+    """
+    Split an index archive key into six segments (airport/year/month/day/camera/file).
+
+    Normalizes ``\\\\`` to ``/`` before ``normpath`` so index keys written on Windows
+    still parse on POSIX (``normpath`` alone does not treat ``\\\\`` as a separator
+    on POSIX).
+    """
+    if not isinstance(rel, str) or not rel.strip():
+        return None
+    s = rel.replace("\\", "/").strip()
+    norm = os.path.normpath(s)
+    slash = norm.replace("\\", "/")
+    parts = [p for p in slash.split("/") if p and p not in (".", "..")]
+    if len(parts) != 6:
+        return None
+    return parts
+
+
+def _browse_archive_path_parts_valid(parts: list[str]) -> bool:
+    """True if airport/year/month/day/camera match scandir_child_names layout rules."""
+    if len(parts) != 6:
+        return False
+    airport, year, month, day, camera, _fname = parts
+    if airport.startswith(".") or camera.startswith("."):
+        return False
+    if not (year.isdigit() and len(year) == 4):
+        return False
+    if not (month.isdigit() and len(month) == 2):
+        return False
+    if not (day.isdigit() and len(day) == 2):
+        return False
+    return True
+
+
 def index_child_file_counts(
     files: dict[str, Any], prefix_parts: tuple[str, ...]
 ) -> dict[str, int]:
@@ -74,11 +109,8 @@ def index_child_file_counts(
     counts: dict[str, int] = {}
     want = list(prefix_parts)
     for rel in files:
-        if not isinstance(rel, str):
-            continue
-        norm = os.path.normpath(rel)
-        parts = norm.split(os.sep)
-        if len(parts) != 6:
+        parts = _index_rel_six_parts(rel)
+        if parts is None or not _browse_archive_path_parts_valid(parts):
             continue
         if k > 0 and parts[:k] != want:
             continue
@@ -122,19 +154,16 @@ def index_list_all_filenames(
     """
     Sorted filenames in a camera directory (prefix_parts length 5).
 
-    Uses the same normpath + os.sep split as index_child_file_counts so index
-    keys work with mixed or platform-specific separators.
+    Uses the same splitting rules as ``index_child_file_counts`` (including
+    cross-platform ``\\\\`` normalization and date-segment validation).
     """
     if len(prefix_parts) != 5:
         return []
     want = list(prefix_parts)
     out: list[str] = []
     for rel in files:
-        if not isinstance(rel, str):
-            continue
-        norm = os.path.normpath(rel)
-        parts = norm.split(os.sep)
-        if len(parts) != 6:
+        parts = _index_rel_six_parts(rel)
+        if parts is None or not _browse_archive_path_parts_valid(parts):
             continue
         if parts[:5] != want:
             continue
