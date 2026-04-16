@@ -391,15 +391,11 @@ def validate_config(config: dict) -> list[str]:
     bpl_raw = web_cfg.get("browse_preview_image_limit")
     if bpl_raw is None:
         bpl_raw = DEFAULT_BROWSE_PREVIEW_IMAGE_LIMIT
-    bpl, bpl_err = _coerce_int_for_validation(
-        bpl_raw, "web.browse_preview_image_limit"
-    )
+    bpl, bpl_err = _coerce_int_for_validation(bpl_raw, "web.browse_preview_image_limit")
     if bpl_err:
         errors.append(bpl_err)
     elif bpl is not None and not 1 <= bpl <= 50_000:
-        errors.append(
-            "web.browse_preview_image_limit must be between 1 and 50000."
-        )
+        errors.append("web.browse_preview_image_limit must be between 1 and 50000.")
 
     slow_raw = web_cfg.get("slow_request_log_seconds")
     if slow_raw is None:

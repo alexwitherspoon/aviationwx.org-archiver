@@ -766,8 +766,13 @@ def api_browse_files():
 def browse():
     config = app.config["ARCHIVER_CONFIG"]
     output_dir = config["archive"]["output_dir"]
-    tree = _archive_tree(output_dir, config)
-    return render_template("browse.html", tree=tree, output_dir=output_dir)
+    return render_template(
+        "browse.html",
+        output_dir=output_dir,
+        browse_page_size=_effective_browse_page_size(config),
+        browse_preview_limit=_effective_browse_preview_limit(config),
+        serve_archive_base=url_for("serve_archive_file", subpath=""),
+    )
 
 
 @app.route("/api/health")

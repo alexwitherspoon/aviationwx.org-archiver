@@ -598,14 +598,14 @@ def test_trigger_archive_redirects_to_config_when_invalid(flask_client):
 
 
 def test_browse_includes_tree_and_output_dir(flask_client):
-    """GET /browse returns 200 with tree and output_dir in template context."""
+    """GET /browse returns 200 with browse shell (lazy-loaded tree)."""
     resp = flask_client.get("/browse")
     assert resp.status_code == 200
     assert b"Browse" in resp.data or b"browse" in resp.data.lower()
 
 
 def test_browse_includes_preview_and_clickable_files(flask_client):
-    """Browse page has preview panel, download button, and file links."""
+    """Browse shell has preview panel; file list comes from browse files API."""
     config = flask_app.config["ARCHIVER_CONFIG"]
     orig_dir = config["archive"]["output_dir"]
     try:
@@ -618,24 +618,25 @@ def test_browse_includes_preview_and_clickable_files(flask_client):
             flask_app.config["ARCHIVER_CONFIG"] = config
 
             resp = flask_client.get("/browse")
+            api = flask_client.get(
+                "/api/browse/files?path=KSPB/2024/06/15/north_runway"
+            )
 
         assert resp.status_code == 200
         assert b"preview-panel" in resp.data
-        assert b"file-link" in resp.data
+        assert b"browse-root" in resp.data
         assert b"preview-download-btn" in resp.data
-        assert b"preview-nav" in resp.data
         assert b"prev-btn" in resp.data
         assert b"next-btn" in resp.data
-        assert b"/archive/KSPB/2024/06/15/north_runway/image.jpg" in resp.data
+        assert api.status_code == 200
+        rows = api.get_json()["files"]
+        assert any(r["name"] == "image.jpg" for r in rows)
     finally:
         config["archive"]["output_dir"] = orig_dir
 
 
-def test_browse_multiple_images_has_valid_data_siblings(flask_client):
-    """Browse page with multiple images has parseable data-siblings JSON."""
-    import json
-    import re
-
+def test_browse_files_api_preview_images_metadata(flask_client):
+    """Browse files API returns preview_images entries with path and index."""
     config = flask_app.config["ARCHIVER_CONFIG"]
     orig_dir = config["archive"]["output_dir"]
     try:
@@ -648,21 +649,21 @@ def test_browse_multiple_images_has_valid_data_siblings(flask_client):
             config["archive"]["output_dir"] = tmpdir
             flask_app.config["ARCHIVER_CONFIG"] = config
 
-            resp = flask_client.get("/browse")
+            api = flask_client.get(
+                "/api/browse/files?path=KSPB/2024/06/15/north_runway"
+            )
 
-        assert resp.status_code == 200
-        match = re.search(rb"data-siblings=\'([^\']+)\'", resp.data)
-        assert match, "data-siblings attribute not found"
-        siblings_json = match.group(1).decode("utf-8")
-        siblings = json.loads(siblings_json)
-        assert len(siblings) == 3
-        assert all("path" in s and "filename" in s and "index" in s for s in siblings)
+        assert api.status_code == 200
+        data = api.get_json()
+        prev = data["preview_images"]
+        assert len(prev) == 3
+        assert all("path" in s and "filename" in s and "index" in s for s in prev)
     finally:
         config["archive"]["output_dir"] = orig_dir
 
 
 def test_browse_includes_time_utc_column(flask_client):
-    """Browse page table has Time (UTC) column header."""
+    """Browse page script builds tables with Time (UTC) column; API returns times."""
     config = flask_app.config["ARCHIVER_CONFIG"]
     orig_dir = config["archive"]["output_dir"]
     try:
@@ -675,9 +676,15 @@ def test_browse_includes_time_utc_column(flask_client):
             flask_app.config["ARCHIVER_CONFIG"] = config
 
             resp = flask_client.get("/browse")
+            api = flask_client.get(
+                "/api/browse/files?path=KSPB/2024/06/15/north_runway"
+            )
 
         assert resp.status_code == 200
         assert b"Time (UTC)" in resp.data
+        assert api.status_code == 200
+        rows = api.get_json()["files"]
+        assert rows and "UTC" in rows[0].get("time_utc", "")
     finally:
         config["archive"]["output_dir"] = orig_dir
 
