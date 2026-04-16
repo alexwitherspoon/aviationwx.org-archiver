@@ -7,8 +7,11 @@
 # ---------------------------------------------------------------------------
 # Stage 1 — dependency install
 # ---------------------------------------------------------------------------
-# Pinned digest for python:3.14-slim (multi-arch index); bump when upgrading Python patch level.
-FROM python:3.14-slim@sha256:bc389f7dfcb21413e72a28f491985326994795e34d2b86c8ae2f417b4e7818aa AS deps
+# Single source of truth for the pinned base (multi-arch index digest).
+# Update when intentionally pulling upstream base-image updates (Python patch bumps, rebuilds, or security fixes).
+ARG PYTHON_BASE=python:3.14-slim@sha256:bc389f7dfcb21413e72a28f491985326994795e34d2b86c8ae2f417b4e7818aa
+
+FROM ${PYTHON_BASE} AS deps
 
 WORKDIR /build
 
@@ -20,7 +23,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 # ---------------------------------------------------------------------------
 # Stage 2 — final image
 # ---------------------------------------------------------------------------
-FROM python:3.14-slim@sha256:bc389f7dfcb21413e72a28f491985326994795e34d2b86c8ae2f417b4e7818aa
+FROM ${PYTHON_BASE}
 
 ARG GIT_SHA=
 ENV GIT_SHA=${GIT_SHA}
