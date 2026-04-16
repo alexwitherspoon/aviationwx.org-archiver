@@ -640,6 +640,13 @@ def serve_archive_file(subpath: str):
     )
 
 
+def _browse_path_bad_request(exc: ValueError):
+    """Map parse_browse_path errors to fixed API strings (do not echo str(exc))."""
+    if exc.args and exc.args[0] == "path too deep":
+        return jsonify({"error": "path has too many segments (maximum five)"}), 400
+    return jsonify({"error": "invalid path"}), 400
+
+
 @app.route("/api/browse/children")
 def api_browse_children():
     """JSON: one tree level under path (lazy browse). Uses index when valid."""
@@ -647,7 +654,7 @@ def api_browse_children():
     try:
         parts = parse_browse_path(raw_path)
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return _browse_path_bad_request(exc)
     if not safe_browse_segments(parts):
         return jsonify({"error": "invalid path"}), 400
     # Deeper than cameras: no folder children; list files via /api/browse/files.
@@ -710,7 +717,7 @@ def api_browse_files():
     try:
         parts = parse_browse_path(raw_path)
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return _browse_path_bad_request(exc)
     if not safe_browse_segments(parts):
         return jsonify({"error": "invalid path"}), 400
     if len(parts) != 5:

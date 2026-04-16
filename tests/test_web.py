@@ -975,3 +975,12 @@ def test_api_browse_children_rejects_five_segment_path(flask_client):
     resp = flask_client.get("/api/browse/children?path=KSEA/2024/01/01/north")
     assert resp.status_code == 400
     assert "error" in resp.get_json()
+
+
+def test_api_browse_rejects_path_too_deep(flask_client):
+    """More than five path segments: 400 with a stable error message (not str(exc))."""
+    resp = flask_client.get("/api/browse/children?path=a/b/c/d/e/extra")
+    assert resp.status_code == 400
+    data = resp.get_json()
+    assert "error" in data
+    assert "too many segments" in data["error"].lower()
