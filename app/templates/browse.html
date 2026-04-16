@@ -38,7 +38,6 @@
 </div>
 
 <div id="browse-root"
-     data-page-size="{{ browse_page_size }}"
      data-preview-limit="{{ browse_preview_limit }}"
      data-archive-base="{{ serve_archive_base }}">
   <p class="empty" id="browse-loading">Loading…</p>
@@ -48,7 +47,6 @@
 (function() {
   const root = document.getElementById('browse-root');
   const loadingEl = document.getElementById('browse-loading');
-  const pageSize = parseInt(root.getAttribute('data-page-size') || '100', 10) || 100;
   let archiveBase = root.getAttribute('data-archive-base') || '';
   if (archiveBase && !archiveBase.endsWith('/')) archiveBase += '/';
 
@@ -143,6 +141,7 @@
     const url = a.getAttribute('href');
     const filename = a.getAttribute('data-filename');
     const ext = filename.split('.').pop().toLowerCase();
+    const isImg = IMAGE_EXTS.includes(ext);
     const tableHost = a.closest('.browse-file-table-host');
     let previewJsonText = '[]';
     let trunc = false;
@@ -153,18 +152,30 @@
     }
     try {
       siblings = JSON.parse(previewJsonText || '[]');
-      currentIndex = parseInt(a.getAttribute('data-preview-slot'), 10);
-      if (isNaN(currentIndex) || currentIndex < 0) currentIndex = 0;
+      const previewSlot = parseInt(a.getAttribute('data-preview-slot'), 10);
+      if (isNaN(previewSlot) || previewSlot < 0) {
+        currentIndex = -1;
+        siblings = [];
+      } else {
+        currentIndex = previewSlot;
+      }
     } catch (_) {
       siblings = [];
       currentIndex = -1;
     }
-    truncatedEl.style.display = trunc ? 'block' : 'none';
-    truncatedEl.textContent = trunc
-      ? 'Preview navigation is limited to the first images in this folder (see configuration).'
-      : '';
+    if (currentIndex < 0) {
+      truncatedEl.style.display = isImg ? 'block' : 'none';
+      truncatedEl.textContent = isImg
+        ? 'Preview navigation is not available for this file.'
+        : '';
+    } else {
+      truncatedEl.style.display = trunc ? 'block' : 'none';
+      truncatedEl.textContent = trunc
+        ? 'Preview navigation is limited to the first images in this folder (see configuration).'
+        : '';
+    }
     panel.style.display = 'block';
-    showImage(url, filename, IMAGE_EXTS.includes(ext));
+    showImage(url, filename, isImg);
     panel.focus();
     panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });

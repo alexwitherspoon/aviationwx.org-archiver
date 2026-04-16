@@ -675,7 +675,7 @@ def api_browse_children():
             {
                 "level": _BROWSE_LEVEL_NAMES[len(parts)],
                 "items": [],
-                "path": "",
+                "path": "/".join(parts),
             }
         )
 
@@ -786,7 +786,6 @@ def browse():
     return render_template(
         "browse.html",
         output_dir=output_dir,
-        browse_page_size=_effective_browse_page_size(config),
         browse_preview_limit=_effective_browse_preview_limit(config),
         serve_archive_base=url_for("serve_archive_file", subpath=""),
     )

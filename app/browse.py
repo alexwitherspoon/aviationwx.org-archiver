@@ -168,19 +168,27 @@ def build_preview_images(
     """Capped preview list for carousel; returns (preview_entries, truncated).
 
     ``all_filenames`` must already be sorted (e.g. from ``index_list_all_filenames``
-    or ``scandir_list_filenames``); filtering preserves order.
+    or ``scandir_list_filenames``). Walks filenames once and stops after
+    ``preview_limit + 1`` images to detect truncation without materializing every
+    image name.
     """
-    images = [f for f in all_filenames if _is_image_filename(f)]
-    index_map = {fn: i for i, fn in enumerate(images)}
-    truncated = len(images) > preview_limit
     base = "/".join(prefix_parts)
     preview: list[dict[str, Any]] = []
-    for fname in images[:preview_limit]:
-        preview.append(
-            {
-                "path": f"{base}/{fname}",
-                "filename": fname,
-                "index": index_map[fname],
-            }
-        )
+    truncated = False
+    img_index = 0
+    for fname in all_filenames:
+        if not _is_image_filename(fname):
+            continue
+        if len(preview) < preview_limit:
+            preview.append(
+                {
+                    "path": f"{base}/{fname}",
+                    "filename": fname,
+                    "index": img_index,
+                }
+            )
+            img_index += 1
+        else:
+            truncated = True
+            break
     return preview, truncated
