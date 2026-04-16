@@ -344,7 +344,8 @@ def validate_config(config: dict) -> list[str]:
         errors.append(delay_err)
     elif delay is not None and not 0 <= delay <= 3600:
         errors.append(
-            "fetch_on_start_delay_seconds must be between 0 and 3600 (seconds)."
+            "schedule.fetch_on_start_delay_seconds must be between 0 and 3600 "
+            "(seconds)."
         )
 
     web_cfg = config.get("web") or {}
