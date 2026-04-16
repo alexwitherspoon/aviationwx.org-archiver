@@ -32,7 +32,7 @@ from flask import (
 from app.browse import (
     _is_image_filename,
     build_preview_images,
-    index_child_file_counts,
+    index_child_file_counts_cached,
     index_list_all_filenames,
     paginate_list,
     parse_browse_path,
@@ -670,6 +670,7 @@ def api_browse_children():
                 "level": _BROWSE_LEVEL_NAMES[len(parts)],
                 "items": [],
                 "path": "/".join(parts),
+                "archive_unavailable": True,
             }
         )
 
@@ -682,7 +683,7 @@ def api_browse_children():
     files = data.get("files", {}) if use_index and data else {}
 
     if use_index:
-        counts = index_child_file_counts(files, parts)
+        counts = index_child_file_counts_cached(output_dir, files, parts)
         items = [
             {"name": name, "file_count": counts[name]} for name in sorted(counts.keys())
         ]
@@ -700,6 +701,7 @@ def api_browse_children():
             "level": _BROWSE_LEVEL_NAMES[len(parts)],
             "items": items,
             "path": "/".join(parts),
+            "archive_unavailable": False,
         }
     )
 
@@ -727,6 +729,20 @@ def api_browse_files():
 
     page_size = _effective_browse_page_size(config)
     preview_limit = _effective_browse_preview_limit(config)
+
+    if not os.path.isdir(output_dir):
+        return jsonify(
+            {
+                "path": "/".join(parts),
+                "total": 0,
+                "offset": offset,
+                "limit": page_size,
+                "files": [],
+                "preview_images": [],
+                "preview_truncated": False,
+                "archive_unavailable": True,
+            }
+        )
 
     from app.archiver import _index_entries_valid, _load_archive_index
 
@@ -769,6 +785,7 @@ def api_browse_files():
             "files": rows,
             "preview_images": preview_images,
             "preview_truncated": preview_truncated,
+            "archive_unavailable": False,
         }
     )
 

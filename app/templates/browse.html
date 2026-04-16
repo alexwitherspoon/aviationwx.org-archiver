@@ -64,6 +64,14 @@
   let siblings = [];
   let currentIndex = -1;
 
+  /** Last path segment after final dot; empty if no extension (matches Python rsplit). */
+  function fileExtensionLower(name) {
+    if (!name) return '';
+    const i = name.lastIndexOf('.');
+    if (i <= 0 || i === name.length - 1) return '';
+    return name.slice(i + 1).toLowerCase();
+  }
+
   function archiveUrl(relPath) {
     return archiveBase + relPath.split('/').map(encodeURIComponent).join('/');
   }
@@ -141,8 +149,8 @@
     e.preventDefault();
     const url = a.getAttribute('href');
     const filename = a.getAttribute('data-filename');
-    const ext = filename.split('.').pop().toLowerCase();
-    const isImg = IMAGE_EXTS.includes(ext);
+    const ext = fileExtensionLower(filename);
+    const isImg = ext !== '' && IMAGE_EXTS.includes(ext);
     const tableHost = a.closest('.browse-file-table-host');
     let previewJsonText = '[]';
     let trunc = false;
@@ -360,6 +368,11 @@
 
   function loadFilesPanel(host, path) {
     fetchFiles(path, 0).then(function(data) {
+      if (data.archive_unavailable) {
+        host.appendChild(el('p', 'empty',
+          'Archive directory is not available. Check configuration (output directory).'));
+        return;
+      }
       attachFileTable(host, path, data);
     }).catch(function() {
       host.appendChild(el('p', 'empty', 'Failed to load files.'));
@@ -368,6 +381,11 @@
 
   function loadNested(parentDetails, path) {
     fetchChildren(path).then(function(data) {
+      if (data.archive_unavailable) {
+        parentDetails.appendChild(el('p', 'empty',
+          'Archive directory is not available. Check configuration (output directory).'));
+        return;
+      }
       if (data.items.length === 0) {
         parentDetails.appendChild(el('p', 'empty', 'No subfolders.'));
         return;
@@ -419,6 +437,13 @@
   function loadRoot() {
     fetchChildren('').then(function(data) {
       if (loadingEl) loadingEl.remove();
+      if (data.archive_unavailable) {
+        const card = el('div', 'card');
+        card.appendChild(el('p', 'empty',
+          'Archive directory is not available. Check configuration (output directory).'));
+        root.appendChild(card);
+        return;
+      }
       if (data.items.length === 0) {
         const card = el('div', 'card');
         card.appendChild(el('p', 'empty',

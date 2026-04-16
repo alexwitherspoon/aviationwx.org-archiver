@@ -8,7 +8,17 @@ uses scoped os.scandir. File lists under a camera are paginated.
 from __future__ import annotations
 
 import os
+import threading
+import time
 from typing import Any
+
+# TTL cache for index_child_file_counts (large archives: avoid full index rescans).
+_CHILD_COUNTS_TTL_SEC = 60.0
+_CHILD_COUNTS_MAX = 128
+_child_counts_cache: dict[
+    tuple[str, tuple[str, ...], int], tuple[float, dict[str, int]]
+] = {}
+_child_counts_lock = threading.Lock()
 
 # Image extensions for preview carousel (lowercase, no dot)
 IMAGE_EXTENSIONS = frozenset({"jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"})
@@ -66,6 +76,35 @@ def index_child_file_counts(
         child = parts[k]
         counts[child] = counts.get(child, 0) + 1
     return counts
+
+
+def clear_child_file_counts_cache() -> None:
+    """Clear TTL cache for child file counts (tests or after a full index rebuild)."""
+    with _child_counts_lock:
+        _child_counts_cache.clear()
+
+
+def index_child_file_counts_cached(
+    output_dir: str,
+    files: dict[str, Any],
+    prefix_parts: tuple[str, ...],
+) -> dict[str, int]:
+    """
+    Same as ``index_child_file_counts``, cached briefly per
+    ``(output_dir, prefix_parts, len(files))`` so repeated tree expands do not
+    rescan the whole index on every request.
+    """
+    key = (output_dir, prefix_parts, len(files))
+    now = time.monotonic()
+    with _child_counts_lock:
+        ent = _child_counts_cache.get(key)
+        if ent is not None and now - ent[0] < _CHILD_COUNTS_TTL_SEC:
+            return dict(ent[1])
+        counts = index_child_file_counts(files, prefix_parts)
+        if len(_child_counts_cache) >= _CHILD_COUNTS_MAX:
+            _child_counts_cache.clear()
+        _child_counts_cache[key] = (now, counts)
+        return dict(counts)
 
 
 def index_list_all_filenames(

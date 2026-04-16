@@ -914,6 +914,7 @@ def test_api_browse_children_lists_airports(flask_client):
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["level"] == "airports"
+        assert data.get("archive_unavailable") is False
         assert any(x["name"] == "KSEA" for x in data["items"])
         assert (
             data["items"][0]["file_count"] is None
@@ -952,6 +953,8 @@ def test_api_browse_files_paginates(flask_client):
         assert len(d1["files"]) == 2
         assert d1["offset"] == 2
         assert len(d1["preview_images"]) >= 1
+        assert d0.get("archive_unavailable") is False
+        assert d1.get("archive_unavailable") is False
     finally:
         config["archive"]["output_dir"] = orig
         config["web"].pop("browse_page_size", None)
@@ -984,3 +987,32 @@ def test_api_browse_rejects_path_too_deep(flask_client):
     data = resp.get_json()
     assert "error" in data
     assert "too many segments" in data["error"].lower()
+
+
+def test_api_browse_archive_unavailable_when_output_dir_missing(flask_client):
+    """Browse APIs set archive_unavailable when configured output_dir is missing."""
+    config = flask_app.config["ARCHIVER_CONFIG"]
+    orig = config["archive"]["output_dir"]
+    try:
+        config["archive"]["output_dir"] = "/nonexistent/archive/path/for/browse/test"
+        flask_app.config["ARCHIVER_CONFIG"] = config
+        r_children = flask_client.get("/api/browse/children")
+        r_files = flask_client.get("/api/browse/files?path=KSEA/2024/01/01/north")
+    finally:
+        config["archive"]["output_dir"] = orig
+        flask_app.config["ARCHIVER_CONFIG"] = config
+
+    assert r_children.status_code == 200
+    d1 = r_children.get_json()
+    assert d1["archive_unavailable"] is True
+    assert d1["items"] == []
+    assert d1["path"] == ""
+
+    assert r_files.status_code == 200
+    d2 = r_files.get_json()
+    assert d2["archive_unavailable"] is True
+    assert d2["total"] == 0
+    assert d2["files"] == []
+    assert d2["path"] == "KSEA/2024/01/01/north"
+    assert d2["preview_images"] == []
+    assert d2["preview_truncated"] is False

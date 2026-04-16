@@ -4,7 +4,9 @@ import os
 
 from app.browse import (
     build_preview_images,
+    clear_child_file_counts_cache,
     index_child_file_counts,
+    index_child_file_counts_cached,
     index_list_all_filenames,
     paginate_list,
     parse_browse_path,
@@ -57,6 +59,17 @@ def test_index_child_file_counts_year_level():
     c = index_child_file_counts(files, ("KSEA",))
     assert c["2024"] == 1
     assert c["2023"] == 1
+
+
+def test_index_child_file_counts_cached_matches_uncached():
+    clear_child_file_counts_cache()
+    files = {
+        "KSEA/2024/01/01/cam/a.jpg": {"size": 1},
+        "KPWT/2024/01/01/cam/a.jpg": {"size": 1},
+    }
+    raw = index_child_file_counts(files, ())
+    cached = index_child_file_counts_cached("/tmp/browse-cache-test", files, ())
+    assert cached == raw
 
 
 def test_index_list_all_filenames():
