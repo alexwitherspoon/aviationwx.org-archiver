@@ -143,15 +143,22 @@
     const url = a.getAttribute('href');
     const filename = a.getAttribute('data-filename');
     const ext = filename.split('.').pop().toLowerCase();
+    const tableHost = a.closest('.browse-file-table-host');
+    let previewJsonText = '[]';
+    let trunc = false;
+    if (tableHost) {
+      const scr = tableHost.querySelector('script.browse-preview-json');
+      if (scr && scr.textContent) previewJsonText = scr.textContent;
+      trunc = tableHost.getAttribute('data-preview-truncated') === '1';
+    }
     try {
-      siblings = JSON.parse(a.getAttribute('data-preview-json') || '[]');
+      siblings = JSON.parse(previewJsonText || '[]');
       currentIndex = parseInt(a.getAttribute('data-preview-slot'), 10);
       if (isNaN(currentIndex) || currentIndex < 0) currentIndex = 0;
     } catch (_) {
       siblings = [];
       currentIndex = -1;
     }
-    const trunc = a.getAttribute('data-preview-truncated') === '1';
     truncatedEl.style.display = trunc ? 'block' : 'none';
     truncatedEl.textContent = trunc
       ? 'Preview navigation is limited to the first images in this folder (see configuration).'
@@ -203,12 +210,21 @@
   }
 
   function attachFileTable(host, path, firstPage) {
-    const wrap = el('div', 'card');
+    const wrap = el('div', 'card browse-file-table-host');
     wrap.style.marginLeft = '16px';
     wrap.style.marginBottom = '8px';
     const title = el('h2');
     title.textContent = path.replace(/\//g, ' — ');
     wrap.appendChild(title);
+
+    const previewJson = JSON.stringify(firstPage.preview_images || []);
+    const previewTrunc = firstPage.preview_truncated ? '1' : '0';
+    wrap.setAttribute('data-preview-truncated', previewTrunc);
+    const jsonScript = document.createElement('script');
+    jsonScript.type = 'application/json';
+    jsonScript.className = 'browse-preview-json';
+    jsonScript.textContent = previewJson;
+    wrap.appendChild(jsonScript);
 
     const tableWrap = el('div');
     tableWrap.style.overflowX = 'auto';
@@ -235,10 +251,7 @@
     tableWrap.appendChild(table);
     wrap.appendChild(tableWrap);
 
-    const previewJson = JSON.stringify(firstPage.preview_images || []);
-    const previewTrunc = firstPage.preview_truncated ? '1' : '0';
-    const total = firstPage.total;
-    const limit = firstPage.limit || pageSize;
+    let fileTotal = firstPage.total;
 
     function appendRows(d) {
       d.files.forEach(function(row) {
@@ -259,9 +272,7 @@
         const a = el('a', 'file-link', row.name);
         a.setAttribute('href', archiveUrl(rel));
         a.setAttribute('data-filename', row.name);
-        a.setAttribute('data-preview-json', previewJson);
         a.setAttribute('data-preview-slot', String(row.preview_slot));
-        a.setAttribute('data-preview-truncated', previewTrunc);
         td3.appendChild(a);
         tr.appendChild(td1);
         tr.appendChild(td2);
@@ -278,33 +289,54 @@
     info.style.fontSize = '12px';
     info.style.color = 'var(--text-muted)';
     let shown = firstPage.files.length;
-    info.textContent = 'Showing ' + shown + ' of ' + total;
+    info.textContent = 'Showing ' + shown + ' of ' + fileTotal;
     footer.appendChild(info);
 
     let nextOffset = firstPage.offset + firstPage.files.length;
     const btn = el('button', 'btn primary browse-load-more', 'Load more');
     btn.type = 'button';
-    btn.style.display = nextOffset < total ? 'inline-block' : 'none';
+    btn.style.display = nextOffset < fileTotal ? 'inline-block' : 'none';
 
-    btn.addEventListener('click', function() {
+    let loadingMore = false;
+    let io = null;
+
+    function loadNextPage() {
+      if (loadingMore) return;
+      if (nextOffset >= fileTotal) return;
+      loadingMore = true;
+      btn.disabled = true;
       fetchFiles(path, nextOffset).then(function(d) {
         appendRows(d);
         shown += d.files.length;
-        info.textContent = 'Showing ' + shown + ' of ' + d.total;
-        nextOffset += d.files.length;
-        if (nextOffset >= d.total) btn.style.display = 'none';
+        fileTotal = d.total;
+        info.textContent = 'Showing ' + shown + ' of ' + fileTotal;
+        nextOffset = d.offset + d.files.length;
+        loadingMore = false;
+        btn.disabled = false;
+        if (nextOffset >= fileTotal) {
+          btn.style.display = 'none';
+          if (io) io.disconnect();
+        }
+      }).catch(function() {
+        loadingMore = false;
+        btn.disabled = false;
       });
-    });
+    }
+
+    btn.addEventListener('click', loadNextPage);
 
     const sentinel = el('div', 'browse-sentinel');
     footer.appendChild(sentinel);
     footer.appendChild(btn);
     wrap.appendChild(footer);
 
-    if ('IntersectionObserver' in window && nextOffset < total) {
-      const io = new IntersectionObserver(function(entries) {
+    if ('IntersectionObserver' in window && nextOffset < fileTotal) {
+      io = new IntersectionObserver(function(entries) {
         entries.forEach(function(entry) {
-          if (entry.isIntersecting && btn.style.display !== 'none') btn.click();
+          if (entry.isIntersecting && btn.style.display !== 'none' && !loadingMore
+              && nextOffset < fileTotal) {
+            loadNextPage();
+          }
         });
       }, { root: null, rootMargin: '400px', threshold: 0 });
       io.observe(sentinel);

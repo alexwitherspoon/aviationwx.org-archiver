@@ -71,21 +71,26 @@ def index_child_file_counts(
 def index_list_all_filenames(
     files: dict[str, Any], prefix_parts: tuple[str, ...]
 ) -> list[str]:
-    """Sorted filenames in a camera directory (prefix_parts length 5)."""
+    """
+    Sorted filenames in a camera directory (prefix_parts length 5).
+
+    Uses the same normpath + os.sep split as index_child_file_counts so index
+    keys work with mixed or platform-specific separators.
+    """
     if len(prefix_parts) != 5:
         return []
-    prefix = "/".join(prefix_parts) + "/"
+    want = list(prefix_parts)
     out: list[str] = []
     for rel in files:
         if not isinstance(rel, str):
             continue
-        if not rel.startswith(prefix):
+        norm = os.path.normpath(rel)
+        parts = norm.split(os.sep)
+        if len(parts) != 6:
             continue
-        rest = rel[len(prefix) :]
-        if "/" in rest:
+        if parts[:5] != want:
             continue
-        if rest:
-            out.append(rest)
+        out.append(parts[5])
     out.sort()
     return out
 
@@ -145,7 +150,7 @@ def scandir_list_filenames(output_dir: str, prefix_parts: tuple[str, ...]) -> li
 
 
 def paginate_list(items: list[str], offset: int, limit: int) -> tuple[int, list[str]]:
-    """Return (total, slice). Clamps offset to valid range."""
+    """Return (total, page slice). Negative offset → 0; past end → empty slice."""
     total = len(items)
     if offset < 0:
         offset = 0
@@ -159,12 +164,8 @@ def build_preview_images(
     all_filenames: list[str],
     prefix_parts: tuple[str, ...],
     preview_limit: int,
-) -> tuple[list[dict[str, Any]], bool, dict[str, int]]:
-    """
-    Capped list for preview navigation + filename -> index among images only.
-
-    Returns (preview_entries, truncated, image_index_by_filename).
-    """
+) -> tuple[list[dict[str, Any]], bool]:
+    """Capped preview list for carousel; returns (preview_entries, truncated)."""
     images = [f for f in sorted(all_filenames) if _is_image_filename(f)]
     index_map = {fn: i for i, fn in enumerate(images)}
     truncated = len(images) > preview_limit
@@ -178,4 +179,4 @@ def build_preview_images(
                 "index": index_map[fname],
             }
         )
-    return preview, truncated, index_map
+    return preview, truncated

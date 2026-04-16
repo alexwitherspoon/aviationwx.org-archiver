@@ -731,7 +731,7 @@ def api_browse_files():
         all_names = scandir_list_filenames(output_dir, parts)
 
     total, page = paginate_list(all_names, offset, page_size)
-    preview_images, preview_truncated, _idx_map = build_preview_images(
+    preview_images, preview_truncated = build_preview_images(
         all_names, parts, preview_limit
     )
     preview_lookup = {e["filename"]: i for i, e in enumerate(preview_images)}

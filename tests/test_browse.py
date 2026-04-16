@@ -1,5 +1,7 @@
 """Unit tests for app.browse lazy listing helpers."""
 
+import os
+
 from app.browse import (
     build_preview_images,
     index_child_file_counts,
@@ -66,6 +68,14 @@ def test_index_list_all_filenames():
     assert names == ["a.jpg", "z.jpg"]
 
 
+def test_index_list_all_filenames_os_joined_keys():
+    """Index keys from os.path.join match the same logical path as slash form."""
+    key = os.path.join("KSEA", "2024", "01", "01", "cam", "x.jpg")
+    files = {key: {"size": 1}}
+    names = index_list_all_filenames(files, ("KSEA", "2024", "01", "01", "cam"))
+    assert names == ["x.jpg"]
+
+
 def test_paginate_list():
     items = ["a", "b", "c", "d"]
     assert paginate_list(items, 0, 2) == (4, ["a", "b"])
@@ -75,13 +85,13 @@ def test_paginate_list():
 
 def test_build_preview_images_truncation():
     files = [f"{i}.jpg" for i in range(10)]
-    prev, trunc, idx_map = build_preview_images(
+    prev, trunc = build_preview_images(
         files, ("KSEA", "2024", "01", "01", "cam"), preview_limit=3
     )
     assert trunc is True
     assert len(prev) == 3
     assert prev[0]["filename"] == "0.jpg"
-    assert idx_map["5.jpg"] == 5
+    assert prev[2]["index"] == 2
 
 
 def test_scandir_roundtrip_tmpdir(tmp_path):
