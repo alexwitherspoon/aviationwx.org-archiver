@@ -711,6 +711,68 @@ def test_serve_archive_file_returns_image(flask_client):
         config["archive"]["output_dir"] = orig_dir
 
 
+def test_serve_archive_file_via_symlinked_output_dir(flask_client):
+    """Regression when output_dir is a symlink: serve via resolved canonical path."""
+    config = flask_app.config["ARCHIVER_CONFIG"]
+    orig_dir = config["archive"]["output_dir"]
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backing = os.path.join(tmpdir, "backing")
+            path = os.path.join(backing, "KSPB", "2024", "06", "15", "north_runway")
+            os.makedirs(path, exist_ok=True)
+            content = b"symlink-archive-bytes\n"
+            with open(os.path.join(path, "via_link.jpg"), "wb") as fh:
+                fh.write(content)
+            link_root = os.path.join(tmpdir, "archive_link")
+            try:
+                os.symlink(backing, link_root, target_is_directory=True)
+            except OSError:
+                pytest.skip("Filesystem does not support symlinked directories")
+            config["archive"]["output_dir"] = link_root
+            flask_app.config["ARCHIVER_CONFIG"] = config
+
+            resp = flask_client.get(
+                "/archive/KSPB/2024/06/15/north_runway/via_link.jpg"
+            )
+
+        assert resp.status_code == 200
+        assert resp.data == content
+    finally:
+        config["archive"]["output_dir"] = orig_dir
+
+
+def test_serve_archive_file_404_symlink_inside_archive_escapes_root(flask_client):
+    """Symlink under output_dir resolving outside canonical root yields 404."""
+    config = flask_app.config["ARCHIVER_CONFIG"]
+    orig_dir = config["archive"]["output_dir"]
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            outer = os.path.join(tmpdir, "outside_archive")
+            os.makedirs(outer, exist_ok=True)
+            rogue = os.path.join(outer, "rogue.bin")
+            with open(rogue, "wb") as fh:
+                fh.write(b"should-not-leak")
+
+            archive_root = os.path.join(tmpdir, "archive")
+            os.makedirs(archive_root, exist_ok=True)
+            leap = os.path.join(archive_root, "escape")
+            parent = os.path.dirname(archive_root)
+            target = os.path.join(parent, "outside_archive")
+            try:
+                os.symlink(target, leap)
+            except OSError:
+                pytest.skip("Filesystem does not support symlinks")
+
+            config["archive"]["output_dir"] = archive_root
+            flask_app.config["ARCHIVER_CONFIG"] = config
+
+            resp = flask_client.get("/archive/escape/rogue.bin")
+
+        assert resp.status_code == 404
+    finally:
+        config["archive"]["output_dir"] = orig_dir
+
+
 def test_serve_archive_file_404_when_file_missing(flask_client):
     """GET /archive/<path> returns 404 when file does not exist."""
     config = flask_app.config["ARCHIVER_CONFIG"]

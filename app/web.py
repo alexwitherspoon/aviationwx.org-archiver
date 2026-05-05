@@ -624,13 +624,18 @@ def serve_archive_file(subpath: str):
     # Require path to be strictly under output_dir (prevents root "/" bypass)
     if not resolved_path.startswith(resolved_output + os.sep):
         abort(404)
-    if not os.path.isfile(full_path):
+    # Use resolved_path for I/O: it matches what the boundary check validates.
+    # Analyzer gap (CodeQL): subtree confined above, yet these sinks remain tainted.
+    # Suppress only on marked lines beside this guard; remove tags if the guard breaks.
+    # codeql[py/path-injection]
+    if not os.path.isfile(resolved_path):
         abort(404)
+    # codeql[py/path-injection]
     return send_file(
-        full_path,
+        resolved_path,
         mimetype=None,
         as_attachment=False,
-        download_name=os.path.basename(full_path),
+        download_name=os.path.basename(resolved_path),
     )
 
 
