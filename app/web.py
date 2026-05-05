@@ -624,9 +624,9 @@ def serve_archive_file(subpath: str):
     # Require path to be strictly under output_dir (prevents root "/" bypass)
     if not resolved_path.startswith(resolved_output + os.sep):
         abort(404)
-    # Use resolved_path for I/O—it matches what the boundary check validates.
-    # Path confined via realpath + strict output_dir prefix; sinks still taint-tracked.
-    # Remove the next two suppressions if that guard is ever weakened or bypassed.
+    # Use resolved_path for I/O: it matches what the boundary check validates.
+    # Analyzer gap (CodeQL): subtree confined above, yet these sinks remain tainted.
+    # Suppress only on marked lines beside this guard; remove tags if the guard breaks.
     # codeql[py/path-injection]
     if not os.path.isfile(resolved_path):
         abort(404)
