@@ -625,8 +625,12 @@ def serve_archive_file(subpath: str):
     if not resolved_path.startswith(resolved_output + os.sep):
         abort(404)
     # Use resolved_path for I/O—it matches what the boundary check validates.
+    # Path confined via realpath + strict output_dir prefix; sinks still taint-tracked.
+    # Remove the next two suppressions if that guard is ever weakened or bypassed.
+    # codeql[py/path-injection]
     if not os.path.isfile(resolved_path):
         abort(404)
+    # codeql[py/path-injection]
     return send_file(
         resolved_path,
         mimetype=None,
