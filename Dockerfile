@@ -9,7 +9,7 @@
 # ---------------------------------------------------------------------------
 # Single source of truth for the pinned base (multi-arch index digest).
 # Update when intentionally pulling upstream base-image updates (Python patch bumps, rebuilds, or security fixes).
-ARG PYTHON_BASE=python:3.14-slim@sha256:5b3879b6f3cb77e712644d50262d05a7c146b7312d784a18eff7ff5462e77033
+ARG PYTHON_BASE=python:3.14-slim@sha256:a7185a8e40af01bf891414a4df16ef10fc6000cee460a404a13da9029fe41604
 
 FROM ${PYTHON_BASE} AS deps
 
